@@ -1026,3 +1026,63 @@ Before declaring the build complete, verify:
 ---
 
 *End of CLAUDE.md — begin with Phase 0.*
+---
+
+## ADDENDUM — INTELLIGENCE TIERS & MISSION CONTROL
+
+*Added April 10, 2026 — Carlos & King Charly*
+
+### Agent Intelligence Tiers
+
+Not all agents are created equal. Different roles get different LLM models, simulating
+real-world variance in capability, experience, and engagement level.
+
+| Tier | Model | Agents | Rationale |
+|------|-------|--------|-----------|
+| **Tier 1 — Strategic** | claude-4-6-opus | PM_ALEX, ARCH_SARA, EXEC_VICTOR, PMO_NIKO | Big picture thinkers, complex trade-offs |
+| **Tier 2 — Senior** | claude-4-6-sonnet | FI_CHEN, CO_MARTA, MM_RAVI, SD_ISLA, PP_JONAS, WM_FATIMA, INT_MARCO, SEC_DIANA, BI_SAM, CHG_NADIA, DM_FELIX, QA_CLAIRE, IT_MGR_HELEN, CUST_PM_OMAR | Domain experts, solid decision-makers |
+| **Tier 3 — Operational** | gemini-2.5-pro / gpt-5.2 | DEV_PRIYA, DEV_LEON, BA_CUST_JAMES, FI_KU_ROSE, CO_KU_BJORN, MM_KU_GRACE, SD_KU_TONY | Capable but narrower scope, occasionally miss context |
+| **Tier 4 — Basic** | qwen3.6-plus (free) | WM_KU_ELENA, PP_KU_IBRAHIM, HR_KU_SOPHIE, CHAMP_LEILA | Low engagement archetypes, terse responses, may miss things |
+
+**Tier Drift:** Customer agents can upgrade/downgrade tiers based on personality evolution.
+A Ghost who re-engages after missing a deadline might move from Tier 4 → Tier 3.
+A Power User who gains trust could reach Tier 2. This is configured in personality.py.
+
+### Mission Control — King Charly as Co-Operator
+
+King Charly (the AI assistant) is not just the builder — he is a co-operator of simulations.
+
+**Capabilities:**
+- Start/pause/stop simulations via admin API
+- Monitor SSE feed during active simulations
+- Watch for: stuck agents, token burn spikes, milestone completions, interesting conflicts
+- Pause autonomously if something looks wrong (runaway loops, model errors, token budget exceeded)
+- Send briefings to Carlos via Telegram after simulation runs
+
+**Admin API Endpoints (localhost only):**
+```
+GET    /api/admin/health          Detailed health: active agents, tokens/min, phase progress
+GET    /api/admin/highlights      Last N significant events (decisions, tools, conflicts, milestones)
+POST   /api/admin/token-budget    Set max token budget for current run
+GET    /api/admin/token-usage     Current token usage breakdown by agent and tier
+```
+
+**Webhook Callbacks:**
+The simulation engine can POST to a configurable webhook URL when key events occur:
+- Phase transitions
+- Critical decisions
+- Blockers raised
+- Simulation complete
+- Token budget 80% / 100% reached
+
+This allows King Charly to receive push notifications via OpenClaw cron/heartbeat
+and react without polling.
+
+**Overnight Run Pattern:**
+1. Carlos or King Charly starts simulation (API or UI)
+2. King Charly monitors via heartbeat checks (every 15-30 min)
+3. If issues: pause + notify Carlos on Telegram
+4. On completion: generate highlights briefing, send to Telegram
+5. Carlos reviews in the morning
+
+---
