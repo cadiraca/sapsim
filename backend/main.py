@@ -1,13 +1,15 @@
 """
 SAP SIM — FastAPI Backend Entry Point
-Phase: 1.2
-Purpose: App factory with CORS and health endpoint; routes delegated to api/routes.py.
-Dependencies: fastapi, uvicorn, api.routes
+Phase: 3.6
+Purpose: App factory with CORS, main routes, and admin router.
+         Admin API is mounted at /api/admin (operator/Mission-Controller use).
+Dependencies: fastapi, uvicorn, api.routes, api.admin
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.admin import router as admin_router
 from api.routes import router
 
 app = FastAPI(
@@ -25,6 +27,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(admin_router, prefix="/api/admin")
 
 
 @app.get("/health")
