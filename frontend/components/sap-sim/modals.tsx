@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { agents, type Agent } from '@/lib/mock-data'
+import type { Agent as ApiAgent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 // Settings Modal
@@ -365,24 +366,40 @@ export function ProjectSetupModal({ isOpen, onClose }: ProjectSetupModalProps) {
 
 // Agent Detail Modal
 interface AgentDetailModalProps {
-  agent: Agent | null
+  agent: ApiAgent | null
   onClose: () => void
+}
+
+/** Derive 2-letter initials from a codename like "PM_ALEX" → "PA" */
+function deriveInitials(codename: string): string {
+  const parts = codename.split('_').filter(Boolean)
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  }
+  return codename.slice(0, 2).toUpperCase()
+}
+
+/** Normalize a 1-5 personality score to a 0-100 percentage */
+function scoreToPercent(value: number): number {
+  return Math.round(((value - 1) / 4) * 100)
 }
 
 export function AgentDetailModal({ agent, onClose }: AgentDetailModalProps) {
   if (!agent) return null
 
-  const avatarBg = agent.side === 'consultant' 
-    ? 'bg-[#3b82f6]/20 text-[#3b82f6]' 
-    : agent.side === 'customer' 
-      ? 'bg-[#f59e0b]/20 text-[#f59e0b]' 
-      : 'bg-[#71717a]/20 text-[#71717a]'
+  const initials = deriveInitials(agent.codename)
 
-  const sideColor = agent.side === 'consultant' 
-    ? 'text-[#3b82f6]' 
-    : agent.side === 'customer' 
-      ? 'text-[#f59e0b]' 
-      : 'text-[#71717a]'
+  const avatarBg = agent.side === 'consultant'
+    ? 'bg-[#3b82f6]/20 text-[#3b82f6]'
+    : agent.side === 'customer'
+    ? 'bg-[#f59e0b]/20 text-[#f59e0b]'
+    : 'bg-[#71717a]/20 text-[#71717a]'
+
+  const sideColor = agent.side === 'consultant'
+    ? 'text-[#3b82f6]'
+    : agent.side === 'customer'
+    ? 'text-[#f59e0b]'
+    : 'text-[#71717a]'
 
   // Mock activity log
   const activityLog = [
@@ -393,8 +410,8 @@ export function AgentDetailModal({ agent, onClose }: AgentDetailModalProps) {
     { time: '9:00am', content: 'Logged in to simulation' },
   ]
 
-  // Mock relationships
-  const relationships = agents.slice(0, 6).filter(a => a.id !== agent.id)
+  // Mock relationships from legacy data for display
+  const relationships = agents.slice(0, 6)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -411,12 +428,15 @@ export function AgentDetailModal({ agent, onClose }: AgentDetailModalProps) {
           {/* Header */}
           <div className="flex items-center gap-4">
             <div className={cn("h-14 w-14 rounded-full flex items-center justify-center text-xl font-bold", avatarBg)}>
-              {agent.initials}
+              {initials}
             </div>
             <div>
               <h3 className="text-lg font-semibold text-white">{agent.codename}</h3>
               <p className="text-sm text-[#71717a]">{agent.role}</p>
               <p className={cn("text-xs font-medium capitalize", sideColor)}>{agent.side}</p>
+              {agent.tier && (
+                <p className="text-[10px] text-[#71717a] capitalize">{agent.tier} tier</p>
+              )}
             </div>
           </div>
 
@@ -428,28 +448,28 @@ export function AgentDetailModal({ agent, onClose }: AgentDetailModalProps) {
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-[#71717a]">Engagement</span>
-                    <span className="text-white">{agent.personality.engagement}%</span>
+                    <span className="text-white">{scoreToPercent(agent.personality.engagement)}%</span>
                   </div>
                   <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#3b82f6] rounded-full" style={{ width: `${agent.personality.engagement}%` }} />
+                    <div className="h-full bg-[#3b82f6] rounded-full" style={{ width: `${scoreToPercent(agent.personality.engagement)}%` }} />
                   </div>
                 </div>
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-[#71717a]">Trust</span>
-                    <span className="text-white">{agent.personality.trust}%</span>
+                    <span className="text-white">{scoreToPercent(agent.personality.trust)}%</span>
                   </div>
                   <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#22c55e] rounded-full" style={{ width: `${agent.personality.trust}%` }} />
+                    <div className="h-full bg-[#22c55e] rounded-full" style={{ width: `${scoreToPercent(agent.personality.trust)}%` }} />
                   </div>
                 </div>
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-[#71717a]">Risk Tolerance</span>
-                    <span className="text-white">{agent.personality.riskTolerance}%</span>
+                    <span className="text-white">{scoreToPercent(agent.personality.risk_tolerance)}%</span>
                   </div>
                   <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#f59e0b] rounded-full" style={{ width: `${agent.personality.riskTolerance}%` }} />
+                    <div className="h-full bg-[#f59e0b] rounded-full" style={{ width: `${scoreToPercent(agent.personality.risk_tolerance)}%` }} />
                   </div>
                 </div>
               </div>
@@ -463,11 +483,16 @@ export function AgentDetailModal({ agent, onClose }: AgentDetailModalProps) {
               <div className="flex items-center gap-2 mb-2">
                 <div className={cn(
                   "h-2 w-2 rounded-full",
-                  agent.status === 'thinking' ? 'bg-[#f59e0b]' : agent.status === 'speaking' ? 'bg-[#22c55e]' : 'bg-[#71717a]'
+                  agent.status === 'thinking' ? 'bg-[#f59e0b]'
+                  : agent.status === 'speaking' ? 'bg-[#22c55e]'
+                  : agent.status === 'in_meeting' ? 'bg-[#a855f7]'
+                  : 'bg-[#71717a]'
                 )} />
-                <span className="text-sm text-white capitalize">{agent.status}</span>
+                <span className="text-sm text-white capitalize">{agent.status.replace('_', ' ')}</span>
               </div>
-              <p className="text-xs text-[#71717a]">Current task: Reviewing integration documentation for MM module</p>
+              <p className="text-xs text-[#71717a]">
+                {agent.current_task ?? 'No active task'}
+              </p>
             </div>
           </div>
 

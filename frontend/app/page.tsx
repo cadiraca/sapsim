@@ -7,7 +7,7 @@ import { MainFeed } from '@/components/sap-sim/main-feed'
 import { ContextPanel } from '@/components/sap-sim/context-panel'
 import { StakeholderView } from '@/components/sap-sim/stakeholder-view'
 import { SettingsModal, ProjectSetupModal, AgentDetailModal } from '@/components/sap-sim/modals'
-import { type Agent, type SimulationStatus } from '@/lib/mock-data'
+import { type Agent, type SimulationStatus } from '@/lib/types'
 
 export default function SAPSimDashboard() {
   const [simulationStatus, setSimulationStatus] = useState<SimulationStatus>('RUNNING')
