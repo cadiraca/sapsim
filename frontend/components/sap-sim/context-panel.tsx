@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
@@ -21,6 +21,10 @@ import type {
   DecisionItem,
   ToolItem,
   ToolResponse,
+  TestCaseResponse,
+  TestCase,
+  LessonResponse,
+  Lesson,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -60,11 +64,19 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
   )
 }
 
-function EmptyState({ label }: { label: string }) {
+function EmptyState({
+  label,
+  icon,
+  message,
+}: {
+  label?: string
+  icon?: React.ReactNode
+  message?: string
+}) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-12 text-[#71717a]">
-      <InboxIcon className="h-5 w-5" />
-      <span className="text-xs">{label}</span>
+      {icon ?? <InboxIcon className="h-5 w-5" />}
+      <span className="text-xs text-center">{message ?? label ?? 'Nothing here yet'}</span>
     </div>
   )
 }
@@ -491,27 +503,183 @@ function ToolsTab() {
 }
 
 // ---------------------------------------------------------------------------
-// Test Strategy tab — kept as static placeholder (Phase 6.4 scope: 3 tabs)
+// Test Strategy tab — live data from /api/projects/:name/test-strategy
 // ---------------------------------------------------------------------------
 
 function TestStrategyTab() {
+  const [data, setData] = useState<TestCaseResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await api.getTestStrategy(PROJECT_NAME)
+      setData(result)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load test strategy')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  if (loading) return <LoadingState label="Loading test strategy…" />
+  if (error) return <ErrorState message={error} onRetry={loadData} />
+  if (!data) return <EmptyState icon={<FileText className="h-5 w-5" />} message="No test strategy yet" />
+
+  const tests: TestCase[] = data.tests ?? []
+  const coverage = data.overall_progress ?? 0
+
+  const statusColor = (status?: string) => {
+    switch (status?.toLowerCase()) {
+      case 'passed': return 'text-[#22c55e] bg-[#22c55e]/10'
+      case 'failed': return 'text-[#ef4444] bg-[#ef4444]/10'
+      case 'blocked': return 'text-[#f59e0b] bg-[#f59e0b]/10'
+      default: return 'text-[#71717a] bg-[#27272a]'
+    }
+  }
+
   return (
-    <div className="flex flex-col items-center justify-center gap-2 py-12 text-[#71717a]">
-      <FileText className="h-5 w-5" />
-      <span className="text-xs text-center">Test strategy will appear here once the simulation reaches the Realize phase.</span>
+    <div className="space-y-3 h-full overflow-y-auto">
+      {/* Coverage header */}
+      <div className="p-2 bg-[#1c1c1f] rounded space-y-1">
+        <div className="flex justify-between items-center">
+          <span className="text-[10px] text-[#71717a]">Overall Coverage</span>
+          <span className="text-[10px] font-semibold text-white">{Math.round(coverage)}%</span>
+        </div>
+        <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
+          <div
+            className="h-full bg-[#3b82f6] rounded-full transition-all duration-500"
+            style={{ width: `${coverage}%` }}
+          />
+        </div>
+        {data.last_updated && (
+          <p className="text-[9px] text-[#71717a]">
+            Updated: {new Date(data.last_updated).toLocaleDateString()}
+          </p>
+        )}
+      </div>
+
+      {/* Scope */}
+      {data.scope?.length > 0 && (
+        <div>
+          <h4 className="text-[9px] font-medium text-[#71717a] uppercase mb-1">Scope</h4>
+          <div className="flex flex-wrap gap-1">
+            {data.scope.map((s, i) => (
+              <span key={i} className="px-1.5 py-0.5 bg-[#27272a] text-[#e4e4e7] text-[9px] rounded">{s}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Test cases table */}
+      {tests.length > 0 ? (
+        <div>
+          <h4 className="text-[9px] font-medium text-[#71717a] uppercase mb-1">Test Cases ({tests.length})</h4>
+          <div className="space-y-1">
+            {tests.map((tc) => (
+              <div key={tc.id} className="flex items-center gap-2 p-1.5 bg-[#1c1c1f] rounded">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] text-[#e4e4e7] truncate">{tc.name}</p>
+                  {tc.module && <p className="text-[9px] text-[#71717a]">{tc.module}</p>}
+                </div>
+                <span className={cn('text-[8px] px-1.5 py-0.5 rounded font-medium shrink-0', statusColor(tc.status))}>
+                  {tc.status ?? 'pending'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <EmptyState icon={<FileText className="h-4 w-4" />} message="No test cases yet. They'll appear as the simulation progresses." />
+      )}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Lessons tab — kept as static placeholder (Phase 6.4 scope: 3 tabs)
+// Lessons tab — live data from /api/projects/:name/lessons
 // ---------------------------------------------------------------------------
 
+type LessonsByPhase = Record<string, Lesson[]>
+
 function LessonsTab() {
+  const [data, setData] = useState<LessonResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await api.getLessons(PROJECT_NAME)
+      setData(result)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load lessons')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  if (loading) return <LoadingState label="Loading lessons…" />
+  if (error) return <ErrorState message={error} onRetry={loadData} />
+  if (!data || data.lessons.length === 0) {
+    return <EmptyState icon={<Lightbulb className="h-5 w-5" />} message="Lessons will surface here as agents reflect on their work." />
+  }
+
+  // Group by phase
+  const byPhase: LessonsByPhase = {}
+  for (const lesson of data.lessons) {
+    const phase = lesson.phase ?? 'General'
+    if (!byPhase[phase]) byPhase[phase] = []
+    byPhase[phase].push(lesson)
+  }
+
+  const categoryColor = (category: string) => {
+    switch (category?.toLowerCase()) {
+      case 'process': return 'bg-[#3b82f6]/10 text-[#3b82f6]'
+      case 'technical': return 'bg-[#8b5cf6]/10 text-[#8b5cf6]'
+      case 'people': return 'bg-[#f59e0b]/10 text-[#f59e0b]'
+      case 'tools': return 'bg-[#22c55e]/10 text-[#22c55e]'
+      default: return 'bg-[#27272a] text-[#71717a]'
+    }
+  }
+
   return (
-    <div className="flex flex-col items-center justify-center gap-2 py-12 text-[#71717a]">
-      <Lightbulb className="h-5 w-5" />
-      <span className="text-xs text-center">Lessons learned will surface here as agents reflect on their work.</span>
+    <div className="space-y-4 h-full overflow-y-auto">
+      <div className="text-[9px] text-[#71717a]">{data.total} lesson{data.total !== 1 ? 's' : ''} recorded</div>
+      {Object.entries(byPhase).map(([phase, lessons]) => (
+        <div key={phase}>
+          <h4 className="text-[9px] font-semibold text-[#71717a] uppercase mb-1.5 flex items-center gap-1">
+            <span className="w-1 h-1 rounded-full bg-[#3b82f6] inline-block" />
+            {phase} ({lessons.length})
+          </h4>
+          <div className="space-y-1.5">
+            {lessons.map((lesson) => (
+              <div key={lesson.id} className="p-2 bg-[#1c1c1f] rounded space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <span className={cn('text-[8px] px-1.5 py-0.5 rounded font-medium', categoryColor(lesson.category))}>
+                    {lesson.category}
+                  </span>
+                  <span className="text-[9px] text-[#71717a] ml-auto">Day {lesson.day}</span>
+                </div>
+                <p className="text-[11px] text-[#e4e4e7] leading-relaxed">{lesson.lesson}</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] text-[#71717a] truncate">↑ {lesson.raised_by}</span>
+                  {lesson.validation_count > 0 && (
+                    <span className="text-[9px] text-[#22c55e]">✓ {lesson.validation_count}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
