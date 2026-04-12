@@ -1,15 +1,35 @@
 'use client'
 
-import { useState } from 'react'
-import { X, Eye, EyeOff, RefreshCw, Upload, MessageSquare, Wrench } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import {
+  X,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  Upload,
+  MessageSquare,
+  Wrench,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
-import { agents, type Agent } from '@/lib/mock-data'
-import type { Agent as ApiAgent } from '@/lib/types'
+import { api } from '@/lib/api'
+import type {
+  Agent,
+  AgentDetailResponse,
+  CreateProjectRequest,
+  SettingsResponse,
+  SettingsUpdateRequest,
+} from '@/lib/types'
 import { cn } from '@/lib/utils'
 
+// ---------------------------------------------------------------------------
 // Settings Modal
+// ---------------------------------------------------------------------------
+
 interface SettingsModalProps {
   isOpen: boolean
   onClose: () => void
@@ -17,13 +37,92 @@ interface SettingsModalProps {
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [showApiKey, setShowApiKey] = useState(false)
-  const [settings, setSettings] = useState({
-    baseUrl: 'http://localhost:4000',
-    apiKey: '',
-    modelName: 'gpt-4o',
-    maxParallelAgents: 10,
-    memoryCompression: 'every-10',
+  const [settings, setSettings] = useState<SettingsUpdateRequest>({
+    litellm_base_url: 'http://localhost:4000',
+    litellm_api_key: '',
+    litellm_model: 'gpt-4o',
+    max_parallel_agents: 10,
+    memory_compression_interval: 'every-10',
   })
+
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [healthResult, setHealthResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  // Load current settings when modal opens
+  useEffect(() => {
+    if (!isOpen) return
+    setLoading(true)
+    setTestResult(null)
+    setSaveResult(null)
+    setHealthResult(null)
+    // Settings API requires a project name; use the global default or skip gracefully
+    api
+      .getSettings('Apex Manufacturing S4HANA Transformation')
+      .then((data: SettingsResponse) => {
+        setSettings({
+          litellm_base_url: data.litellm_base_url,
+          litellm_api_key: data.litellm_api_key ?? '',
+          litellm_model: data.litellm_model,
+          max_parallel_agents: data.max_parallel_agents,
+          memory_compression_interval: data.memory_compression_interval,
+        })
+      })
+      .catch(() => {
+        // If backend unreachable or no project yet, keep defaults
+      })
+      .finally(() => setLoading(false))
+  }, [isOpen])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setSaveResult(null)
+    try {
+      await api.updateSettings('Apex Manufacturing S4HANA Transformation', settings)
+      setSaveResult({ success: true, message: 'Settings saved.' })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Save failed.'
+      setSaveResult({ success: false, message: msg })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleTestConnection = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const result = await api.testSettings({
+        litellm_base_url: settings.litellm_base_url ?? '',
+        litellm_api_key: settings.litellm_api_key ?? '',
+        litellm_model: settings.litellm_model ?? '',
+      })
+      setTestResult({
+        success: result.success,
+        message: result.success
+          ? `OK — ${result.model_used ?? 'model'} (${result.latency_ms}ms)`
+          : result.error ?? 'Test failed.',
+      })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Test failed.'
+      setTestResult({ success: false, message: msg })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleHealthCheck = async () => {
+    setHealthResult(null)
+    try {
+      const result = await api.health()
+      setHealthResult({ ok: true, message: `${result.service}: ${result.status}` })
+    } catch {
+      setHealthResult({ ok: false, message: 'Backend unreachable.' })
+    }
+  }
 
   if (!isOpen) return null
 
@@ -38,76 +137,161 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           </button>
         </div>
 
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-[#71717a] mb-1.5">LiteLLM Base URL</label>
-            <Input 
-              value={settings.baseUrl}
-              onChange={(e) => setSettings({ ...settings, baseUrl: e.target.value })}
-              className="bg-[#27272a] border-[#27272a] text-white"
-              placeholder="http://localhost:4000"
-            />
+        {loading ? (
+          <div className="flex items-center justify-center py-10">
+            <Loader2 className="h-5 w-5 animate-spin text-[#71717a]" />
           </div>
-
-          <div>
-            <label className="block text-sm text-[#71717a] mb-1.5">API Key / Service Key</label>
-            <div className="relative">
-              <Input 
-                type={showApiKey ? 'text' : 'password'}
-                value={settings.apiKey}
-                onChange={(e) => setSettings({ ...settings, apiKey: e.target.value })}
-                className="bg-[#27272a] border-[#27272a] text-white pr-10"
-                placeholder="sk-..."
-              />
-              <button 
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#71717a] hover:text-white"
+        ) : (
+          <div className="space-y-4">
+            {/* API Health Check */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleHealthCheck}
+                className="bg-transparent border-[#27272a] text-white hover:bg-[#27272a] text-xs"
               >
-                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
+                Test Connection
+              </Button>
+              {healthResult && (
+                <span
+                  className={cn(
+                    'text-xs flex items-center gap-1',
+                    healthResult.ok ? 'text-[#22c55e]' : 'text-[#ef4444]',
+                  )}
+                >
+                  {healthResult.ok ? (
+                    <CheckCircle2 className="h-3 w-3" />
+                  ) : (
+                    <AlertCircle className="h-3 w-3" />
+                  )}
+                  {healthResult.message}
+                </span>
+              )}
             </div>
-          </div>
 
-          <div>
-            <label className="block text-sm text-[#71717a] mb-1.5">Model Name</label>
-            <Input 
-              value={settings.modelName}
-              onChange={(e) => setSettings({ ...settings, modelName: e.target.value })}
-              className="bg-[#27272a] border-[#27272a] text-white"
-              placeholder="e.g. gpt-4o, claude-3-5-sonnet"
-            />
-          </div>
+            <div>
+              <label className="block text-sm text-[#71717a] mb-1.5">LiteLLM Base URL</label>
+              <Input
+                value={settings.litellm_base_url ?? ''}
+                onChange={(e) => setSettings({ ...settings, litellm_base_url: e.target.value })}
+                className="bg-[#27272a] border-[#27272a] text-white"
+                placeholder="http://localhost:4000"
+              />
+            </div>
 
-          <div>
-            <label className="block text-sm text-[#71717a] mb-1.5">
-              Max Parallel Agents: <span className="text-white">{settings.maxParallelAgents}</span>
-            </label>
-            <Slider 
-              value={[settings.maxParallelAgents]}
-              onValueChange={(v) => setSettings({ ...settings, maxParallelAgents: v[0] })}
-              min={1}
-              max={30}
-              step={1}
-              className="py-2"
-            />
-          </div>
+            <div>
+              <label className="block text-sm text-[#71717a] mb-1.5">API Key / Service Key</label>
+              <div className="relative">
+                <Input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={settings.litellm_api_key ?? ''}
+                  onChange={(e) => setSettings({ ...settings, litellm_api_key: e.target.value })}
+                  className="bg-[#27272a] border-[#27272a] text-white pr-10"
+                  placeholder="sk-..."
+                />
+                <button
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#71717a] hover:text-white"
+                >
+                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
 
-          <div>
-            <label className="block text-sm text-[#71717a] mb-1.5">Memory Compression Interval</label>
-            <select 
-              value={settings.memoryCompression}
-              onChange={(e) => setSettings({ ...settings, memoryCompression: e.target.value })}
-              className="w-full bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm"
-            >
-              <option value="every-5">Every 5 turns</option>
-              <option value="every-10">Every 10 turns</option>
-              <option value="every-phase">Every phase</option>
-            </select>
+            <div>
+              <label className="block text-sm text-[#71717a] mb-1.5">Model Name</label>
+              <div className="flex gap-2">
+                <Input
+                  value={settings.litellm_model ?? ''}
+                  onChange={(e) => setSettings({ ...settings, litellm_model: e.target.value })}
+                  className="bg-[#27272a] border-[#27272a] text-white"
+                  placeholder="e.g. gpt-4o, claude-3-5-sonnet"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleTestConnection}
+                  disabled={testing}
+                  className="bg-transparent border-[#27272a] text-white hover:bg-[#27272a] shrink-0"
+                >
+                  {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Test LLM'}
+                </Button>
+              </div>
+              {testResult && (
+                <p
+                  className={cn(
+                    'text-xs mt-1 flex items-center gap-1',
+                    testResult.success ? 'text-[#22c55e]' : 'text-[#ef4444]',
+                  )}
+                >
+                  {testResult.success ? (
+                    <CheckCircle2 className="h-3 w-3" />
+                  ) : (
+                    <AlertCircle className="h-3 w-3" />
+                  )}
+                  {testResult.message}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm text-[#71717a] mb-1.5">
+                Max Parallel Agents:{' '}
+                <span className="text-white">{settings.max_parallel_agents}</span>
+              </label>
+              <Slider
+                value={[settings.max_parallel_agents ?? 10]}
+                onValueChange={(v) => setSettings({ ...settings, max_parallel_agents: v[0] })}
+                min={1}
+                max={30}
+                step={1}
+                className="py-2"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-[#71717a] mb-1.5">
+                Memory Compression Interval
+              </label>
+              <select
+                value={settings.memory_compression_interval ?? 'every-10'}
+                onChange={(e) =>
+                  setSettings({ ...settings, memory_compression_interval: e.target.value })
+                }
+                className="w-full bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm"
+              >
+                <option value="every-5">Every 5 turns</option>
+                <option value="every-10">Every 10 turns</option>
+                <option value="every-phase">Every phase</option>
+              </select>
+            </div>
+
+            {saveResult && (
+              <p
+                className={cn(
+                  'text-xs flex items-center gap-1',
+                  saveResult.success ? 'text-[#22c55e]' : 'text-[#ef4444]',
+                )}
+              >
+                {saveResult.success ? (
+                  <CheckCircle2 className="h-3 w-3" />
+                ) : (
+                  <AlertCircle className="h-3 w-3" />
+                )}
+                {saveResult.message}
+              </p>
+            )}
           </div>
-        </div>
+        )}
 
         <div className="mt-6 flex justify-end">
-          <Button className="bg-[#3b82f6] hover:bg-[#3b82f6]/80 text-white">
+          <Button
+            onClick={handleSave}
+            disabled={saving || loading}
+            className="bg-[#3b82f6] hover:bg-[#3b82f6]/80 text-white"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
             Save Settings
           </Button>
         </div>
@@ -116,19 +300,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   )
 }
 
+// ---------------------------------------------------------------------------
 // Project Setup Modal
+// ---------------------------------------------------------------------------
+
 interface ProjectSetupModalProps {
   isOpen: boolean
   onClose: () => void
-}
-
-interface CustomerPersonality {
-  id: string
-  agent: Agent
-  archetype: string
-  engagement: number
-  trust: number
-  riskTolerance: number
+  onProjectCreated?: (projectName: string) => void
 }
 
 const archetypes = [
@@ -144,7 +323,8 @@ const archetypes = [
   'The Overwhelmed',
 ]
 
-function generatePersonality(): Omit<CustomerPersonality, 'id' | 'agent'> {
+/** Quick random personality used when displaying placeholder rolls */
+function randomPersonality() {
   return {
     archetype: archetypes[Math.floor(Math.random() * archetypes.length)],
     engagement: Math.floor(Math.random() * 80) + 20,
@@ -153,41 +333,109 @@ function generatePersonality(): Omit<CustomerPersonality, 'id' | 'agent'> {
   }
 }
 
-export function ProjectSetupModal({ isOpen, onClose }: ProjectSetupModalProps) {
+/** Default customer role codenames shown in the personality preview */
+const DEFAULT_CUSTOMER_STUBS = [
+  { id: 'c1', initials: 'ES', codename: 'EXEC_SPONSOR' },
+  { id: 'c2', initials: 'PM', codename: 'PROJ_MANAGER' },
+  { id: 'c3', initials: 'FA', codename: 'FIN_ANALYST' },
+  { id: 'c4', initials: 'LM', codename: 'LOGISTICS_MGR' },
+  { id: 'c5', initials: 'IO', codename: 'IT_OWNER' },
+  { id: 'c6', initials: 'PR', codename: 'PROC_OWNER' },
+]
+
+interface PersonalityEntry {
+  id: string
+  initials: string
+  codename: string
+  archetype: string
+  engagement: number
+  trust: number
+  riskTolerance: number
+}
+
+export function ProjectSetupModal({
+  isOpen,
+  onClose,
+  onProjectCreated,
+}: ProjectSetupModalProps) {
   const [step, setStep] = useState(1)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Step 1 fields
   const [projectName, setProjectName] = useState('')
+  const [methodology, setMethodology] = useState('SAP Activate')
+  const [duration, setDuration] = useState('180')
+  const [teamSize, setTeamSize] = useState('15')
   const [industry, setIndustry] = useState('Manufacturing')
+
+  // Step 2 — scope document
   const [scopeDoc, setScopeDoc] = useState('')
+
+  // Step 3 — methodology document
   const [methodologyDoc, setMethodologyDoc] = useState('')
-  
-  const customerAgents = agents.filter(a => a.side === 'customer')
-  const [personalities, setPersonalities] = useState<CustomerPersonality[]>(
-    customerAgents.map(agent => ({
-      id: agent.id,
-      agent,
-      ...generatePersonality(),
-    }))
+
+  // Step 4 — personality preview (purely visual; reroll is cosmetic)
+  const [personalities, setPersonalities] = useState<PersonalityEntry[]>(
+    DEFAULT_CUSTOMER_STUBS.map((s) => ({ ...s, ...randomPersonality() })),
   )
 
-  const rerollAgent = (id: string) => {
-    setPersonalities(prev => prev.map(p => 
-      p.id === id ? { ...p, ...generatePersonality() } : p
-    ))
+  const rerollAgent = useCallback((id: string) => {
+    setPersonalities((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...randomPersonality() } : p)),
+    )
+  }, [])
+
+  const rerollAll = useCallback(() => {
+    setPersonalities((prev) => prev.map((p) => ({ ...p, ...randomPersonality() })))
+  }, [])
+
+  const handleLaunch = async () => {
+    setError(null)
+    if (!projectName.trim()) {
+      setError('Project name is required.')
+      setStep(1)
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      const req: CreateProjectRequest = {
+        name: projectName.trim(),
+        industry,
+        scope: scopeDoc.trim() || undefined,
+        methodology: methodologyDoc.trim() || methodology,
+      }
+      const project = await api.createProject(req)
+      onProjectCreated?.(project.project_name)
+      onClose()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to create project.'
+      setError(msg)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
-  const rerollAll = () => {
-    setPersonalities(prev => prev.map(p => ({ ...p, ...generatePersonality() })))
+  // Reset on close
+  const handleClose = () => {
+    setStep(1)
+    setError(null)
+    setProjectName('')
+    setScopeDoc('')
+    setMethodologyDoc('')
+    onClose()
   }
 
   if (!isOpen) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60" onClick={handleClose} />
       <div className="relative bg-[#18181b] border border-[#27272a] rounded-lg w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-xl">
         <div className="flex items-center justify-between p-4 border-b border-[#27272a]">
-          <h2 className="text-lg font-semibold text-white">Project Setup</h2>
-          <button onClick={onClose} className="text-[#71717a] hover:text-white">
+          <h2 className="text-lg font-semibold text-white">New Project Setup</h2>
+          <button onClick={handleClose} className="text-[#71717a] hover:text-white">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -196,88 +444,165 @@ export function ProjectSetupModal({ isOpen, onClose }: ProjectSetupModalProps) {
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[#27272a]">
           {[1, 2, 3, 4].map((s) => (
             <div key={s} className="flex items-center gap-2">
-              <div className={cn(
-                "h-6 w-6 rounded-full flex items-center justify-center text-xs font-medium",
-                step >= s ? "bg-[#3b82f6] text-white" : "bg-[#27272a] text-[#71717a]"
-              )}>
+              <div
+                className={cn(
+                  'h-6 w-6 rounded-full flex items-center justify-center text-xs font-medium',
+                  step >= s ? 'bg-[#3b82f6] text-white' : 'bg-[#27272a] text-[#71717a]',
+                )}
+              >
                 {s}
               </div>
-              {s < 4 && <div className={cn("w-8 h-0.5", step > s ? "bg-[#3b82f6]" : "bg-[#27272a]")} />}
+              {s < 4 && (
+                <div
+                  className={cn('w-8 h-0.5', step > s ? 'bg-[#3b82f6]' : 'bg-[#27272a]')}
+                />
+              )}
             </div>
           ))}
         </div>
 
         <div className="p-4 overflow-y-auto max-h-[calc(90vh-180px)]">
+          {/* ── Step 1: Project Information ── */}
           {step === 1 && (
             <div className="space-y-4">
               <h3 className="text-sm font-medium text-white mb-4">Step 1: Project Information</h3>
+
               <div>
-                <label className="block text-sm text-[#71717a] mb-1.5">Project Name</label>
-                <Input 
+                <label className="block text-sm text-[#71717a] mb-1.5">
+                  Project Name <span className="text-[#ef4444]">*</span>
+                </label>
+                <Input
                   value={projectName}
                   onChange={(e) => setProjectName(e.target.value)}
                   className="bg-[#27272a] border-[#27272a] text-white"
                   placeholder="e.g. Apex Manufacturing S/4HANA Transformation"
                 />
               </div>
-              <div>
-                <label className="block text-sm text-[#71717a] mb-1.5">Industry</label>
-                <select 
-                  value={industry}
-                  onChange={(e) => setIndustry(e.target.value)}
-                  className="w-full bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm"
-                >
-                  <option>Manufacturing</option>
-                  <option>Retail</option>
-                  <option>Services</option>
-                  <option>Pharma</option>
-                  <option>Logistics</option>
-                  <option>Energy</option>
-                  <option>Custom</option>
-                </select>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-[#71717a] mb-1.5">Methodology</label>
+                  <select
+                    value={methodology}
+                    onChange={(e) => setMethodology(e.target.value)}
+                    className="w-full bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm"
+                  >
+                    <option>SAP Activate</option>
+                    <option>ASAP</option>
+                    <option>Agile / SAFe</option>
+                    <option>Custom</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-[#71717a] mb-1.5">Industry</label>
+                  <select
+                    value={industry}
+                    onChange={(e) => setIndustry(e.target.value)}
+                    className="w-full bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm"
+                  >
+                    <option>Manufacturing</option>
+                    <option>Retail</option>
+                    <option>Services</option>
+                    <option>Pharma</option>
+                    <option>Logistics</option>
+                    <option>Energy</option>
+                    <option>Custom</option>
+                  </select>
+                </div>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-[#71717a] mb-1.5">
+                    Duration (days)
+                  </label>
+                  <Input
+                    type="number"
+                    min={30}
+                    max={730}
+                    value={duration}
+                    onChange={(e) => setDuration(e.target.value)}
+                    className="bg-[#27272a] border-[#27272a] text-white"
+                    placeholder="180"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-[#71717a] mb-1.5">Team Size</label>
+                  <Input
+                    type="number"
+                    min={5}
+                    max={100}
+                    value={teamSize}
+                    onChange={(e) => setTeamSize(e.target.value)}
+                    className="bg-[#27272a] border-[#27272a] text-white"
+                    placeholder="15"
+                  />
+                </div>
+              </div>
+
+              {error && (
+                <p className="text-xs text-[#ef4444] flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" />
+                  {error}
+                </p>
+              )}
             </div>
           )}
 
+          {/* ── Step 2: Scope Document ── */}
           {step === 2 && (
             <div className="space-y-4">
-              <h3 className="text-sm font-medium text-white mb-4">Step 2: Project Scope Document</h3>
-              <div className="border-2 border-dashed border-[#27272a] rounded-lg p-6 text-center">
+              <h3 className="text-sm font-medium text-white mb-4">
+                Step 2: Project Scope Document
+              </h3>
+              <div className="border-2 border-dashed border-[#27272a] rounded-lg p-6">
                 <Upload className="h-8 w-8 text-[#71717a] mx-auto mb-2" />
-                <p className="text-sm text-[#71717a] mb-2">Upload or paste your project scope document</p>
-                <textarea 
+                <p className="text-sm text-[#71717a] text-center mb-2">
+                  Upload or paste your project scope document
+                </p>
+                <textarea
                   value={scopeDoc}
                   onChange={(e) => setScopeDoc(e.target.value)}
-                  className="w-full h-32 bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm resize-none mt-2"
-                  placeholder="Paste markdown content here..."
+                  className="w-full h-40 bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm resize-none mt-2"
+                  placeholder="Paste markdown content here... (optional)"
                 />
               </div>
             </div>
           )}
 
+          {/* ── Step 3: Methodology Document ── */}
           {step === 3 && (
             <div className="space-y-4">
-              <h3 className="text-sm font-medium text-white mb-4">Step 3: Methodology (Optional)</h3>
-              <p className="text-xs text-[#71717a] mb-2">Leave empty to use SAP Activate by default</p>
-              <div className="border-2 border-dashed border-[#27272a] rounded-lg p-6 text-center">
+              <h3 className="text-sm font-medium text-white mb-4">
+                Step 3: Methodology Document (Optional)
+              </h3>
+              <p className="text-xs text-[#71717a]">
+                Leave empty to use <strong className="text-white">{methodology}</strong> defaults.
+              </p>
+              <div className="border-2 border-dashed border-[#27272a] rounded-lg p-6">
                 <Upload className="h-8 w-8 text-[#71717a] mx-auto mb-2" />
-                <p className="text-sm text-[#71717a] mb-2">Upload or paste your methodology document</p>
-                <textarea 
+                <p className="text-sm text-[#71717a] text-center mb-2">
+                  Upload or paste your methodology document
+                </p>
+                <textarea
                   value={methodologyDoc}
                   onChange={(e) => setMethodologyDoc(e.target.value)}
-                  className="w-full h-32 bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm resize-none mt-2"
+                  className="w-full h-40 bg-[#27272a] border border-[#27272a] text-white rounded-md px-3 py-2 text-sm resize-none mt-2"
                   placeholder="Paste markdown content here..."
                 />
               </div>
             </div>
           )}
 
+          {/* ── Step 4: Customer Personalities Preview ── */}
           {step === 4 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-medium text-white">Step 4: Customer Personalities</h3>
-                <Button 
-                  variant="outline" 
+                <h3 className="text-sm font-medium text-white">
+                  Step 4: Customer Personalities Preview
+                </h3>
+                <Button
+                  variant="outline"
                   size="sm"
                   onClick={rerollAll}
                   className="bg-transparent border-[#27272a] text-white hover:bg-[#27272a]"
@@ -286,20 +611,24 @@ export function ProjectSetupModal({ isOpen, onClose }: ProjectSetupModalProps) {
                   Re-roll All
                 </Button>
               </div>
+              <p className="text-xs text-[#71717a] mb-2">
+                Final personalities are assigned by the backend at simulation start. These are
+                preview rolls only.
+              </p>
               <div className="grid grid-cols-2 gap-3">
                 {personalities.map((p) => (
-                  <div 
+                  <div
                     key={p.id}
                     className="p-3 bg-[#27272a]/50 border border-[#27272a] rounded-lg"
                   >
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <div className="h-6 w-6 rounded-full bg-[#f59e0b]/20 text-[#f59e0b] flex items-center justify-center text-[9px] font-bold">
-                          {p.agent.initials}
+                          {p.initials}
                         </div>
-                        <span className="text-xs font-medium text-white">{p.agent.codename}</span>
+                        <span className="text-xs font-medium text-white">{p.codename}</span>
                       </div>
-                      <button 
+                      <button
                         onClick={() => rerollAgent(p.id)}
                         className="text-[#71717a] hover:text-white"
                       >
@@ -308,54 +637,67 @@ export function ProjectSetupModal({ isOpen, onClose }: ProjectSetupModalProps) {
                     </div>
                     <div className="text-[10px] text-[#f59e0b] mb-2">{p.archetype}</div>
                     <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[9px]">
-                        <span className="text-[#71717a]">Engagement</span>
-                        <div className="w-16 h-1 bg-[#27272a] rounded-full overflow-hidden">
-                          <div className="h-full bg-[#3b82f6] rounded-full" style={{ width: `${p.engagement}%` }} />
+                      {[
+                        { label: 'Engagement', val: p.engagement, color: 'bg-[#3b82f6]' },
+                        { label: 'Trust', val: p.trust, color: 'bg-[#22c55e]' },
+                        { label: 'Risk Tolerance', val: p.riskTolerance, color: 'bg-[#f59e0b]' },
+                      ].map(({ label, val, color }) => (
+                        <div key={label} className="flex items-center justify-between text-[9px]">
+                          <span className="text-[#71717a]">{label}</span>
+                          <div className="w-16 h-1 bg-[#27272a] rounded-full overflow-hidden">
+                            <div
+                              className={cn('h-full rounded-full', color)}
+                              style={{ width: `${val}%` }}
+                            />
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center justify-between text-[9px]">
-                        <span className="text-[#71717a]">Trust</span>
-                        <div className="w-16 h-1 bg-[#27272a] rounded-full overflow-hidden">
-                          <div className="h-full bg-[#22c55e] rounded-full" style={{ width: `${p.trust}%` }} />
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between text-[9px]">
-                        <span className="text-[#71717a]">Risk Tolerance</span>
-                        <div className="w-16 h-1 bg-[#27272a] rounded-full overflow-hidden">
-                          <div className="h-full bg-[#f59e0b] rounded-full" style={{ width: `${p.riskTolerance}%` }} />
-                        </div>
-                      </div>
+                      ))}
                     </div>
                   </div>
                 ))}
               </div>
+
+              {error && (
+                <p className="text-xs text-[#ef4444] flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" />
+                  {error}
+                </p>
+              )}
             </div>
           )}
         </div>
 
         <div className="flex items-center justify-between p-4 border-t border-[#27272a]">
-          <Button 
+          <Button
             variant="outline"
-            onClick={() => setStep(s => Math.max(1, s - 1))}
-            disabled={step === 1}
+            onClick={() => setStep((s) => Math.max(1, s - 1))}
+            disabled={step === 1 || submitting}
             className="bg-transparent border-[#27272a] text-white hover:bg-[#27272a]"
           >
             Back
           </Button>
           {step < 4 ? (
-            <Button 
-              onClick={() => setStep(s => s + 1)}
+            <Button
+              onClick={() => setStep((s) => s + 1)}
+              disabled={step === 1 && !projectName.trim()}
               className="bg-[#3b82f6] hover:bg-[#3b82f6]/80 text-white"
             >
               Next
             </Button>
           ) : (
-            <Button 
-              onClick={onClose}
+            <Button
+              onClick={handleLaunch}
+              disabled={submitting}
               className="bg-[#3b82f6] hover:bg-[#3b82f6]/80 text-white"
             >
-              Launch Simulation
+              {submitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                  Creating…
+                </>
+              ) : (
+                'Launch Simulation'
+              )}
             </Button>
           )}
         </div>
@@ -364,10 +706,14 @@ export function ProjectSetupModal({ isOpen, onClose }: ProjectSetupModalProps) {
   )
 }
 
+// ---------------------------------------------------------------------------
 // Agent Detail Modal
+// ---------------------------------------------------------------------------
+
 interface AgentDetailModalProps {
-  agent: ApiAgent | null
+  agent: Agent | null
   onClose: () => void
+  projectName?: string
 }
 
 /** Derive 2-letter initials from a codename like "PM_ALEX" → "PA" */
@@ -384,34 +730,56 @@ function scoreToPercent(value: number): number {
   return Math.round(((value - 1) / 4) * 100)
 }
 
-export function AgentDetailModal({ agent, onClose }: AgentDetailModalProps) {
+export function AgentDetailModal({
+  agent,
+  onClose,
+  projectName = 'Apex Manufacturing S4HANA Transformation',
+}: AgentDetailModalProps) {
+  const [detail, setDetail] = useState<AgentDetailResponse | null>(null)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+
+  // Fetch full agent detail whenever the selected agent changes
+  useEffect(() => {
+    if (!agent) {
+      setDetail(null)
+      return
+    }
+    setLoadingDetail(true)
+    api
+      .getAgent(projectName, agent.codename)
+      .then((d) => setDetail(d))
+      .catch(() => setDetail(null))
+      .finally(() => setLoadingDetail(false))
+  }, [agent, projectName])
+
   if (!agent) return null
 
-  const initials = deriveInitials(agent.codename)
+  // Merge lightweight agent prop with full detail (detail wins)
+  const resolved = detail ?? agent
+  const initials = deriveInitials(resolved.codename)
 
-  const avatarBg = agent.side === 'consultant'
-    ? 'bg-[#3b82f6]/20 text-[#3b82f6]'
-    : agent.side === 'customer'
-    ? 'bg-[#f59e0b]/20 text-[#f59e0b]'
-    : 'bg-[#71717a]/20 text-[#71717a]'
+  const avatarBg =
+    resolved.side === 'consultant'
+      ? 'bg-[#3b82f6]/20 text-[#3b82f6]'
+      : resolved.side === 'customer'
+        ? 'bg-[#f59e0b]/20 text-[#f59e0b]'
+        : 'bg-[#71717a]/20 text-[#71717a]'
 
-  const sideColor = agent.side === 'consultant'
-    ? 'text-[#3b82f6]'
-    : agent.side === 'customer'
-    ? 'text-[#f59e0b]'
-    : 'text-[#71717a]'
+  const sideColor =
+    resolved.side === 'consultant'
+      ? 'text-[#3b82f6]'
+      : resolved.side === 'customer'
+        ? 'text-[#f59e0b]'
+        : 'text-[#71717a]'
 
-  // Mock activity log
-  const activityLog = [
-    { time: '10:23am', content: 'Reviewed integration documentation' },
-    { time: '10:15am', content: 'Participated in FI-CO meeting' },
-    { time: '9:45am', content: 'Updated task status to In Progress' },
-    { time: '9:30am', content: 'Started daily standup' },
-    { time: '9:00am', content: 'Logged in to simulation' },
-  ]
-
-  // Mock relationships from legacy data for display
-  const relationships = agents.slice(0, 6)
+  const statusColor =
+    resolved.status === 'thinking'
+      ? 'bg-[#f59e0b]'
+      : resolved.status === 'speaking'
+        ? 'bg-[#22c55e]'
+        : resolved.status === 'in_meeting'
+          ? 'bg-[#a855f7]'
+          : 'bg-[#71717a]'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -425,122 +793,167 @@ export function AgentDetailModal({ agent, onClose }: AgentDetailModalProps) {
         </div>
 
         <div className="p-4 overflow-y-auto max-h-[calc(90vh-60px)] space-y-4">
-          {/* Header */}
+          {/* ── Header ── */}
           <div className="flex items-center gap-4">
-            <div className={cn("h-14 w-14 rounded-full flex items-center justify-center text-xl font-bold", avatarBg)}>
+            <div
+              className={cn(
+                'h-14 w-14 rounded-full flex items-center justify-center text-xl font-bold',
+                avatarBg,
+              )}
+            >
               {initials}
             </div>
             <div>
-              <h3 className="text-lg font-semibold text-white">{agent.codename}</h3>
-              <p className="text-sm text-[#71717a]">{agent.role}</p>
-              <p className={cn("text-xs font-medium capitalize", sideColor)}>{agent.side}</p>
-              {agent.tier && (
-                <p className="text-[10px] text-[#71717a] capitalize">{agent.tier} tier</p>
+              <h3 className="text-lg font-semibold text-white">{resolved.codename}</h3>
+              <p className="text-sm text-[#71717a]">{resolved.role}</p>
+              <p className={cn('text-xs font-medium capitalize', sideColor)}>{resolved.side}</p>
+              {resolved.tier && (
+                <p className="text-[10px] text-[#71717a] capitalize">{resolved.tier} tier</p>
               )}
             </div>
+            {loadingDetail && (
+              <Loader2 className="h-4 w-4 animate-spin text-[#71717a] ml-auto" />
+            )}
           </div>
 
-          {/* Personality (for customer agents) */}
-          {agent.personality && (
+          {/* ── Personality Radar (customer agents) ── */}
+          {resolved.personality && (
             <div className="p-3 bg-[#27272a]/50 border border-[#27272a] rounded-lg">
-              <div className="text-sm font-medium text-[#f59e0b] mb-2">{agent.personality.archetype}</div>
+              <div className="text-sm font-medium text-[#f59e0b] mb-3">
+                {resolved.personality.archetype}
+              </div>
               <div className="space-y-2">
-                <div>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-[#71717a]">Engagement</span>
-                    <span className="text-white">{scoreToPercent(agent.personality.engagement)}%</span>
+                {[
+                  {
+                    label: 'Engagement',
+                    val: scoreToPercent(resolved.personality.engagement),
+                    color: 'bg-[#3b82f6]',
+                  },
+                  {
+                    label: 'Trust',
+                    val: scoreToPercent(resolved.personality.trust),
+                    color: 'bg-[#22c55e]',
+                  },
+                  {
+                    label: 'Risk Tolerance',
+                    val: scoreToPercent(resolved.personality.risk_tolerance),
+                    color: 'bg-[#f59e0b]',
+                  },
+                ].map(({ label, val, color }) => (
+                  <div key={label}>
+                    <div className="flex items-center justify-between text-xs mb-1">
+                      <span className="text-[#71717a]">{label}</span>
+                      <span className="text-white">{val}%</span>
+                    </div>
+                    <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
+                      <div
+                        className={cn('h-full rounded-full', color)}
+                        style={{ width: `${val}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#3b82f6] rounded-full" style={{ width: `${scoreToPercent(agent.personality.engagement)}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-[#71717a]">Trust</span>
-                    <span className="text-white">{scoreToPercent(agent.personality.trust)}%</span>
-                  </div>
-                  <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#22c55e] rounded-full" style={{ width: `${scoreToPercent(agent.personality.trust)}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-[#71717a]">Risk Tolerance</span>
-                    <span className="text-white">{scoreToPercent(agent.personality.risk_tolerance)}%</span>
-                  </div>
-                  <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#f59e0b] rounded-full" style={{ width: `${scoreToPercent(agent.personality.risk_tolerance)}%` }} />
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           )}
 
-          {/* Current Status */}
+          {/* ── Current Status ── */}
           <div>
             <h4 className="text-xs font-medium text-[#71717a] mb-2">CURRENT STATUS</h4>
             <div className="p-3 bg-[#27272a]/50 border border-[#27272a] rounded-lg">
               <div className="flex items-center gap-2 mb-2">
-                <div className={cn(
-                  "h-2 w-2 rounded-full",
-                  agent.status === 'thinking' ? 'bg-[#f59e0b]'
-                  : agent.status === 'speaking' ? 'bg-[#22c55e]'
-                  : agent.status === 'in_meeting' ? 'bg-[#a855f7]'
-                  : 'bg-[#71717a]'
-                )} />
-                <span className="text-sm text-white capitalize">{agent.status.replace('_', ' ')}</span>
+                <div className={cn('h-2 w-2 rounded-full', statusColor)} />
+                <span className="text-sm text-white capitalize">
+                  {resolved.status.replace('_', ' ')}
+                </span>
               </div>
               <p className="text-xs text-[#71717a]">
-                {agent.current_task ?? 'No active task'}
+                {resolved.current_task ?? 'No active task'}
               </p>
             </div>
           </div>
 
-          {/* Activity Log */}
+          {/* ── Memory Summary (from detail) ── */}
+          {detail?.memory_summary && (
+            <div>
+              <h4 className="text-xs font-medium text-[#71717a] mb-2">MEMORY SUMMARY</h4>
+              <div className="p-3 bg-[#27272a]/50 border border-[#27272a] rounded-lg text-xs text-[#a1a1aa]">
+                <p>{detail.memory_summary}</p>
+                {detail.memory_turns > 0 && (
+                  <p className="mt-1 text-[#52525b]">{detail.memory_turns} memory turns</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Communication History / Activity ── */}
           <div>
             <h4 className="text-xs font-medium text-[#71717a] mb-2 flex items-center gap-1">
               <MessageSquare className="h-3 w-3" />
-              ACTIVITY LOG
+              {detail?.recent_activity && detail.recent_activity.length > 0
+                ? 'RECENT ACTIVITY'
+                : 'COMMUNICATION HISTORY'}
             </h4>
             <div className="space-y-2">
-              {activityLog.map((item, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs">
-                  <span className="text-[#71717a] shrink-0 w-14">{item.time}</span>
-                  <span className="text-[#e4e4e7]">{item.content}</span>
-                </div>
-              ))}
+              {detail?.recent_activity && detail.recent_activity.length > 0 ? (
+                detail.recent_activity.slice(0, 8).map((item, i) => {
+                  const timestamp =
+                    (item as Record<string, unknown>).timestamp as string | undefined
+                  const content =
+                    ((item as Record<string, unknown>).content as string | undefined) ??
+                    ((item as Record<string, unknown>).message as string | undefined) ??
+                    JSON.stringify(item)
+                  const timeLabel = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : `#${i + 1}`
+                  return (
+                    <div key={i} className="flex items-start gap-2 text-xs">
+                      <span className="text-[#71717a] shrink-0 w-14">{timeLabel}</span>
+                      <span className="text-[#e4e4e7]">{content}</span>
+                    </div>
+                  )
+                })
+              ) : (
+                <p className="text-xs text-[#52525b] italic">
+                  {loadingDetail ? 'Loading activity…' : 'No recent activity recorded.'}
+                </p>
+              )}
             </div>
           </div>
 
-          {/* Tools */}
+          {/* ── Skills / Tools ── */}
           <div>
             <h4 className="text-xs font-medium text-[#71717a] mb-2 flex items-center gap-1">
               <Wrench className="h-3 w-3" />
-              TOOLS
+              {detail?.skills && detail.skills.length > 0 ? 'SKILLS' : 'TOOLS'}
             </h4>
             <div className="flex flex-wrap gap-1.5">
-              <span className="px-2 py-1 bg-[#a855f7]/20 text-[#a855f7] text-[10px] rounded">Integration Touchpoint Tracker</span>
-              <span className="px-2 py-1 bg-[#27272a] text-[#71717a] text-[10px] rounded">Config Drift Detector</span>
+              {detail?.skills && detail.skills.length > 0 ? (
+                detail.skills.map((skill) => (
+                  <span
+                    key={skill}
+                    className="px-2 py-1 bg-[#a855f7]/20 text-[#a855f7] text-[10px] rounded"
+                  >
+                    {skill}
+                  </span>
+                ))
+              ) : (
+                <>
+                  <span className="px-2 py-1 bg-[#a855f7]/20 text-[#a855f7] text-[10px] rounded">
+                    Integration Touchpoint Tracker
+                  </span>
+                  <span className="px-2 py-1 bg-[#27272a] text-[#71717a] text-[10px] rounded">
+                    Config Drift Detector
+                  </span>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Relationships */}
-          <div>
-            <h4 className="text-xs font-medium text-[#71717a] mb-2">FREQUENT INTERACTIONS</h4>
-            <div className="flex flex-wrap gap-2">
-              {relationships.map((a) => (
-                <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 bg-[#27272a]/50 rounded">
-                  <div className={cn(
-                    "h-5 w-5 rounded-full flex items-center justify-center text-[8px] font-bold",
-                    a.side === 'consultant' ? 'bg-[#3b82f6]/20 text-[#3b82f6]' : a.side === 'customer' ? 'bg-[#f59e0b]/20 text-[#f59e0b]' : 'bg-[#71717a]/20 text-[#71717a]'
-                  )}>
-                    {a.initials}
-                  </div>
-                  <span className="text-[10px] text-white">{a.codename}</span>
-                </div>
-              ))}
+          {/* ── Model info ── */}
+          {resolved.model && (
+            <div className="text-[10px] text-[#52525b]">
+              Model: <span className="text-[#71717a]">{resolved.model}</span>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>
