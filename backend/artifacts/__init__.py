@@ -8,11 +8,15 @@ Import from here to keep consumers decoupled from module internals.
 Example:
     from artifacts import MeetingLog, MeetingLogger, TranscriptTurn
     from artifacts import SimulatedTool, ToolRegistry
+    from artifacts import TestCase, TestStrategy, TestType, TestStatus
+    from artifacts import Lesson, LessonsCollector
 """
 
 from artifacts.meeting_logger import MeetingLog, MeetingLogger, TranscriptTurn
 from artifacts.decision_board import Decision, DecisionBoard
 from artifacts.tool_registry import SimulatedTool, ToolRegistry, ToolUsageEvent
+from artifacts.test_strategy import TestCase, TestStrategy, TestType, TestStatus
+from artifacts.lessons_learned import Lesson, LessonsCollector
 
 __all__ = [
     # Meeting Logger (Phase 4.1)
@@ -26,4 +30,12 @@ __all__ = [
     "SimulatedTool",
     "ToolRegistry",
     "ToolUsageEvent",
+    # Test Strategy (Phase 4.4)
+    "TestCase",
+    "TestStrategy",
+    "TestType",
+    "TestStatus",
+    # Lessons Learned (Phase 4.4)
+    "Lesson",
+    "LessonsCollector",
 ]
