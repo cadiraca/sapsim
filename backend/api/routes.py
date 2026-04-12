@@ -1,11 +1,13 @@
 """
-SAP SIM — API Routes (Full Phase 5 Implementation)
-Phase: 5
+SAP SIM — API Routes (Phase 5.1 — Pydantic Models + Wired Engine)
+Phase: 5.1
 Purpose: All FastAPI endpoints for project management, simulation control,
          settings, live feed, agents, artifacts, stakeholder view, and admin.
-         Simulation control stubs update the project state file directly;
-         full engine integration happens in Phase 6 when the Conductor is wired.
-Dependencies: FastAPI, Pydantic v2, config, utils.persistence, api.sse
+         Simulation control routes call the real SimulationEngine singleton.
+         Artifact routes use real DecisionBoard / ToolRegistry / LessonsCollector /
+         TestStrategy objects for live data access.
+Dependencies: FastAPI, Pydantic v2, config, utils.persistence, api.sse,
+              simulation.engine, artifacts.*
 """
 
 from __future__ import annotations
@@ -23,11 +25,43 @@ from typing import Any, AsyncGenerator, Optional
 import aiofiles
 import aiofiles.os
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
+from api.models import (
+    AdminHealthResponse,
+    AdminHighlightsResponse,
+    AgentDetailResponse,
+    AgentPersonality,
+    AgentResponse,
+    ArtifactReportRequest,
+    ArtifactResponse,
+    CreateProjectRequest,
+    DecisionResponse,
+    FeedPageResponse,
+    LessonEntry,
+    LessonResponse,
+    MeetingDetailResponse,
+    MeetingResponse,
+    PhaseProgress,
+    ProjectListResponse,
+    ProjectResponse,
+    ProposeDecisionRequest,
+    RerollRequest,
+    SettingsResponse,
+    SettingsUpdateRequest,
+    SimulationStatusResponse,
+    StakeholderView,
+    StartSimulationRequest,
+    TestCaseResponse,
+    TestSettingsRequest,
+    TestSettingsResponse,
+    TokenBudgetRequest,
+    TokenUsageResponse,
+    ToolResponse,
+)
 from api.sse import get_bus
 from config import ProjectSettings, load_settings, save_settings
+from simulation.engine import get_engine
 from utils.persistence import (
     PROJECTS_BASE,
     _ensure_dir,
@@ -40,6 +74,78 @@ from utils.persistence import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Artifact factory helpers (lazy-import to avoid circular deps at module load)
+# ---------------------------------------------------------------------------
+
+def _get_decision_board(project_name: str):
+    from artifacts.decision_board import DecisionBoard as ArtifactDecisionBoard
+    from utils.persistence import PROJECTS_BASE
+    return ArtifactDecisionBoard(project_name=project_name, projects_root=str(PROJECTS_BASE))
+
+
+def _get_tool_registry(project_name: str):
+    from artifacts.tool_registry import ToolRegistry
+    return ToolRegistry(project_name=project_name)
+
+
+def _get_lessons_collector(project_name: str):
+    from artifacts.lessons_learned import LessonsCollector
+    try:
+        return LessonsCollector.load(project_name)
+    except FileNotFoundError:
+        return LessonsCollector(project_name)
+
+
+def _get_test_strategy(project_name: str):
+    from artifacts.test_strategy import TestStrategy
+    try:
+        return TestStrategy.load(project_name)
+    except FileNotFoundError:
+        return TestStrategy(project_name)
+
+
+def _get_meeting_logger(project_name: str):
+    """Build a MeetingLogger hydrated from on-disk meeting JSON files."""
+    from artifacts.meeting_logger import MeetingLog, MeetingLogger, TranscriptTurn
+
+    ml = MeetingLogger()
+    meetings_dir = _project_dir(project_name) / "meetings"
+    if not meetings_dir.exists():
+        return ml
+    for fp in sorted(meetings_dir.glob("*.json")):
+        try:
+            import json as _json
+            data = _json.loads(fp.read_text(encoding="utf-8"))
+            meeting_id = data.get("id", fp.stem)
+            log = MeetingLog(
+                meeting_id=meeting_id,
+                title=data.get("title", ""),
+                meeting_type=data.get("meeting_type", data.get("type", "ad_hoc")),
+                phase=data.get("phase", ""),
+                participants=data.get("participants", []),
+                agenda_items=data.get("agenda", []),
+                simulated_day=data.get("simulated_day", 0),
+                duration_minutes=data.get("duration_minutes"),
+                is_finalised=True,
+            )
+            for turn in data.get("transcript", []):
+                if isinstance(turn, dict):
+                    log.transcript.append(
+                        TranscriptTurn(
+                            speaker=turn.get("speaker", ""),
+                            text=turn.get("text", turn.get("content", "")),
+                        )
+                    )
+            log.decisions_made = data.get("decisions", [])
+            log.action_items = data.get("action_items", [])
+            # Register directly into archive (skip start_log/finalize_log lifecycle)
+            ml._archive[meeting_id] = log
+        except Exception as exc:
+            logger.warning("_get_meeting_logger: skipping %s — %s", fp.name, exc)
+    return ml
+
 
 # ---------------------------------------------------------------------------
 # SAP Activate default phases (mirrors state_machine.py when fully built)
@@ -63,262 +169,8 @@ STATUS_PAUSED    = "PAUSED"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_STOPPED   = "STOPPED"
 
-# ---------------------------------------------------------------------------
-# Pydantic response / request models
-# ---------------------------------------------------------------------------
+# (mirrored from state_machine for route-level guards)
 
-
-class ErrorResponse(BaseModel):
-    """Standard error shape returned by all error paths."""
-    error: str
-    detail: str
-    code: str
-
-
-class PhaseInfo(BaseModel):
-    """SAP Activate phase descriptor."""
-    id: str
-    name: str
-    duration_days: int
-
-
-class ProjectSummary(BaseModel):
-    """Lightweight project list entry."""
-    name: str
-    status: str
-    current_phase: str
-    simulated_day: int
-    total_days: int
-    industry: Optional[str] = None
-    created_at: str
-    last_updated: str
-
-
-class PhaseProgress(BaseModel):
-    phase_id: str
-    phase_name: str
-    percentage: float = 0.0
-    is_current: bool = False
-    is_completed: bool = False
-
-
-class ProjectState(BaseModel):
-    """Full project state returned by detail endpoints."""
-    project_name: str
-    status: str
-    current_phase: str
-    simulated_day: int
-    total_days: int
-    phase_progress: list[PhaseProgress]
-    active_agents: list[str]
-    pending_decisions: list[dict[str, Any]]
-    active_meetings: list[dict[str, Any]]
-    milestones: list[dict[str, Any]]
-    industry: Optional[str] = None
-    scope: Optional[str] = None
-    methodology: Optional[str] = None
-    created_at: str
-    last_updated: str
-
-
-class CreateProjectRequest(BaseModel):
-    """Request body for POST /api/projects."""
-    name: str = Field(..., min_length=1, max_length=64,
-                      pattern=r"^[a-zA-Z0-9_\-]+$",
-                      description="Unique project identifier (alphanumeric, hyphens, underscores)")
-    industry: Optional[str] = Field(default="Manufacturing",
-                                    description="Customer industry (e.g. Manufacturing, Retail)")
-    scope: Optional[str] = Field(default=None,
-                                 description="Free-text project scope description")
-    methodology: Optional[str] = Field(default=None,
-                                       description="Custom methodology text; defaults to SAP Activate")
-
-
-class StartSimulationRequest(BaseModel):
-    """Optional config override when starting a simulation."""
-    max_parallel_agents: Optional[int] = Field(default=None, ge=1, le=30)
-
-
-class SettingsResponse(BaseModel):
-    """Project settings returned by GET /settings."""
-    litellm_base_url: str
-    litellm_api_key: str
-    litellm_model: str
-    max_parallel_agents: int
-    memory_compression_interval: str
-    webhook_url: Optional[str] = None
-    max_token_budget: Optional[int] = None
-
-
-class SettingsUpdateRequest(BaseModel):
-    """Body for PUT /settings."""
-    litellm_base_url: Optional[str] = None
-    litellm_api_key: Optional[str] = None
-    litellm_model: Optional[str] = None
-    max_parallel_agents: Optional[int] = Field(default=None, ge=1, le=30)
-    memory_compression_interval: Optional[str] = None
-    webhook_url: Optional[str] = None
-    max_token_budget: Optional[int] = None
-
-
-class TestSettingsRequest(BaseModel):
-    """Body for POST /api/settings/test — test any LiteLLM endpoint."""
-    litellm_base_url: str
-    litellm_api_key: str
-    litellm_model: str
-
-
-class TestSettingsResponse(BaseModel):
-    """Result of a settings connectivity test."""
-    success: bool
-    latency_ms: Optional[float] = None
-    model_used: Optional[str] = None
-    error: Optional[str] = None
-
-
-class FeedPage(BaseModel):
-    """Paginated feed response."""
-    events: list[dict[str, Any]]
-    total: int
-    page: int
-    limit: int
-    has_more: bool
-
-
-class AgentPersonality(BaseModel):
-    engagement: int = Field(ge=1, le=5)
-    trust: int = Field(ge=1, le=5)
-    risk_tolerance: int = Field(ge=1, le=5)
-    archetype: str
-    history: list[dict[str, Any]] = []
-
-
-class AgentSummary(BaseModel):
-    codename: str
-    role: str
-    side: str               # "consultant" | "customer" | "crossfunctional"
-    tier: str               # "strategic" | "senior" | "operational" | "basic"
-    model: str
-    status: str             # "idle" | "thinking" | "speaking" | "in_meeting"
-    current_task: Optional[str] = None
-    personality: Optional[AgentPersonality] = None
-
-
-class AgentDetail(AgentSummary):
-    skills: list[str] = []
-    memory_turns: int = 0
-    memory_summary: Optional[str] = None
-    recent_activity: list[dict[str, Any]] = []
-
-
-class RerollRequest(BaseModel):
-    """Body for POST /agents/reroll — optionally target a specific agent."""
-    codename: Optional[str] = Field(default=None,
-                                    description="Codename to re-roll; omit to re-roll all customers")
-
-
-class MeetingSummary(BaseModel):
-    id: str
-    title: str
-    phase: str
-    simulated_day: int
-    facilitator: str
-    participants: list[str]
-    duration_turns: int
-    decisions_count: int
-
-
-class MeetingDetail(MeetingSummary):
-    agenda: list[str]
-    transcript: list[dict[str, Any]]
-    decisions: list[str]
-    action_items: list[dict[str, Any]]
-    markdown_path: Optional[str] = None
-
-
-class DecisionBoard(BaseModel):
-    pending: list[dict[str, Any]] = []
-    approved: list[dict[str, Any]] = []
-    rejected: list[dict[str, Any]] = []
-    deferred: list[dict[str, Any]] = []
-    total: int = 0
-
-
-class ToolRegistryResponse(BaseModel):
-    tools: list[dict[str, Any]]
-    total: int
-
-
-class TestStrategyResponse(BaseModel):
-    scope: list[str] = []
-    test_types: list[dict[str, Any]] = []
-    uat_plan: dict[str, Any] = {}
-    defect_process: str = ""
-    overall_progress: float = 0.0
-    last_updated: Optional[str] = None
-
-
-class LessonEntry(BaseModel):
-    id: str
-    raised_by: str
-    phase: str
-    day: int
-    category: str
-    lesson: str
-    validation_count: int
-    validated_by: list[str] = []
-
-
-class LessonsResponse(BaseModel):
-    lessons: list[LessonEntry]
-    total: int
-
-
-class StakeholderView(BaseModel):
-    """Curated executive summary for the stakeholder panel."""
-    project_name: str
-    status: str
-    health_score: float = Field(ge=0, le=100, description="0-100 overall project health")
-    current_phase: str
-    phase_progress_pct: float
-    simulated_day: int
-    total_days: int
-    active_agent_count: int
-    pending_escalations: list[dict[str, Any]] = []
-    top_decisions: list[dict[str, Any]] = []
-    latest_milestone: Optional[dict[str, Any]] = None
-    agent_leaderboard: list[dict[str, Any]] = []
-    phase_breakdown: list[PhaseProgress] = []
-    last_updated: str
-
-
-class AdminHealthResponse(BaseModel):
-    status: str
-    active_projects: int
-    active_agents: int
-    tokens_per_minute: float
-    total_tokens_used: int
-    phase_summaries: list[dict[str, Any]] = []
-    uptime_seconds: float
-
-
-class AdminHighlightsResponse(BaseModel):
-    highlights: list[dict[str, Any]]
-    total: int
-
-
-class TokenBudgetRequest(BaseModel):
-    project_name: str
-    max_tokens: Optional[int] = None
-
-
-class TokenUsageResponse(BaseModel):
-    project_name: str
-    total_used: int
-    budget: Optional[int] = None
-    remaining: Optional[int] = None
-    by_agent: dict[str, int] = {}
-    by_tier: dict[str, int] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -397,8 +249,8 @@ async def _require_status(
     return state
 
 
-def _state_to_model(state: dict[str, Any]) -> ProjectState:
-    return ProjectState(
+def _state_to_model(state: dict[str, Any]) -> ProjectResponse:
+    return ProjectResponse(
         project_name=state["project_name"],
         status=state["status"],
         current_phase=state["current_phase"],
@@ -445,12 +297,12 @@ async def health() -> dict:
 
 @router.post(
     "/api/projects",
-    response_model=ProjectState,
+    response_model=ProjectResponse,
     status_code=status.HTTP_201_CREATED,
     tags=["projects"],
     summary="Create a new simulation project",
 )
-async def create_project(req: CreateProjectRequest) -> ProjectState:
+async def create_project(req: CreateProjectRequest) -> ProjectResponse:
     """Create a new SAP SIM project with the given name, industry, scope and methodology.
 
     - Initialises ``project.json`` with IDLE status and SAP Activate phase scaffold.
@@ -485,6 +337,24 @@ async def create_project(req: CreateProjectRequest) -> ProjectState:
     # Default settings
     save_settings(req.name, ProjectSettings())
 
+    # Also register the project with the engine (IDLE state — no loop started yet)
+    engine = get_engine()
+    if not engine.is_registered(req.name):
+        try:
+            await engine.create_project(
+                req.name,
+                config={
+                    "litellm_base_url": ProjectSettings().litellm_base_url,
+                    "litellm_api_key":  ProjectSettings().litellm_api_key,
+                    "litellm_model":    ProjectSettings().litellm_model,
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "Engine.create_project failed for '%s' (non-fatal, engine will init on start): %s",
+                req.name, exc
+            )
+
     # Announce creation event to the bus (non-blocking)
     bus = get_bus(req.name)
     await bus.publish("PROJECT_CREATED", {"project_name": req.name, "industry": req.industry})
@@ -495,19 +365,19 @@ async def create_project(req: CreateProjectRequest) -> ProjectState:
 
 @router.get(
     "/api/projects",
-    response_model=list[ProjectSummary],
+    response_model=list[ProjectListResponse],
     tags=["projects"],
     summary="List all projects",
 )
-async def list_projects() -> list[ProjectSummary]:
+async def list_projects() -> list[ProjectListResponse]:
     """Return a lightweight summary for every project in the ``projects/`` folder."""
     names = await _list_project_names()
-    summaries: list[ProjectSummary] = []
+    summaries: list[ProjectListResponse] = []
     for name in names:
         state = await load_project_state(name)
         if state:
             summaries.append(
-                ProjectSummary(
+                ProjectListResponse(
                     name=state["project_name"],
                     status=state["status"],
                     current_phase=state["current_phase"],
@@ -523,11 +393,11 @@ async def list_projects() -> list[ProjectSummary]:
 
 @router.get(
     "/api/projects/{project_name}",
-    response_model=ProjectState,
+    response_model=ProjectResponse,
     tags=["projects"],
     summary="Get full project state",
 )
-async def get_project(project_name: str) -> ProjectState:
+async def get_project(project_name: str) -> ProjectResponse:
     """Return the full project state for *project_name*."""
     state = await _require_project(project_name)
     return _state_to_model(state)
@@ -560,14 +430,14 @@ async def delete_project(project_name: str) -> None:
 
 @router.post(
     "/api/projects/{project_name}/start",
-    response_model=ProjectState,
+    response_model=ProjectResponse,
     tags=["simulation"],
     summary="Start the simulation",
 )
 async def start_simulation(
     project_name: str,
     req: StartSimulationRequest = StartSimulationRequest(),
-) -> ProjectState:
+) -> ProjectResponse:
     """Start the simulation for *project_name*.
 
     Transitions status from IDLE or STOPPED → RUNNING.
@@ -583,10 +453,31 @@ async def start_simulation(
         action="start",
     )
 
+    settings = load_settings(project_name)
     if req.max_parallel_agents:
-        settings = load_settings(project_name)
         settings.max_parallel_agents = req.max_parallel_agents
         save_settings(project_name, settings)
+
+    # --- Engine integration: create project if not registered, then start loop ---
+    engine = get_engine()
+    if not engine.is_registered(project_name):
+        try:
+            cfg: dict[str, Any] = {
+                "litellm_base_url": settings.litellm_base_url,
+                "litellm_api_key":  settings.litellm_api_key,
+                "litellm_model":    settings.litellm_model,
+            }
+            if req.tick_interval_seconds:
+                cfg["tick_interval_seconds"] = req.tick_interval_seconds
+            await engine.create_project(project_name, config=cfg)
+        except Exception as exc:
+            logger.warning(
+                "Engine.create_project failed for '%s' (non-fatal): %s", project_name, exc
+            )
+    try:
+        await engine.start(project_name)
+    except Exception as exc:
+        logger.warning("Engine.start failed for '%s' (non-fatal): %s", project_name, exc)
 
     state["status"] = STATUS_RUNNING
     state["last_updated"] = _now_iso()
@@ -610,11 +501,11 @@ async def start_simulation(
 
 @router.post(
     "/api/projects/{project_name}/pause",
-    response_model=ProjectState,
+    response_model=ProjectResponse,
     tags=["simulation"],
     summary="Pause the simulation",
 )
-async def pause_simulation(project_name: str) -> ProjectState:
+async def pause_simulation(project_name: str) -> ProjectResponse:
     """Pause a running simulation, preserving all in-progress state.
 
     Raises:
@@ -626,6 +517,14 @@ async def pause_simulation(project_name: str) -> ProjectState:
         allowed=[STATUS_RUNNING],
         action="pause",
     )
+
+    # --- Engine integration ---
+    engine = get_engine()
+    if engine.is_registered(project_name):
+        try:
+            engine.pause(project_name)
+        except Exception as exc:
+            logger.warning("Engine.pause failed for '%s' (non-fatal): %s", project_name, exc)
 
     state["status"] = STATUS_PAUSED
     state["last_updated"] = _now_iso()
@@ -648,11 +547,11 @@ async def pause_simulation(project_name: str) -> ProjectState:
 
 @router.post(
     "/api/projects/{project_name}/resume",
-    response_model=ProjectState,
+    response_model=ProjectResponse,
     tags=["simulation"],
     summary="Resume a paused simulation",
 )
-async def resume_simulation(project_name: str) -> ProjectState:
+async def resume_simulation(project_name: str) -> ProjectResponse:
     """Resume a previously paused simulation.
 
     Raises:
@@ -664,6 +563,14 @@ async def resume_simulation(project_name: str) -> ProjectState:
         allowed=[STATUS_PAUSED],
         action="resume",
     )
+
+    # --- Engine integration ---
+    engine = get_engine()
+    if engine.is_registered(project_name):
+        try:
+            await engine.resume(project_name)
+        except Exception as exc:
+            logger.warning("Engine.resume failed for '%s' (non-fatal): %s", project_name, exc)
 
     state["status"] = STATUS_RUNNING
     state["last_updated"] = _now_iso()
@@ -686,11 +593,11 @@ async def resume_simulation(project_name: str) -> ProjectState:
 
 @router.post(
     "/api/projects/{project_name}/stop",
-    response_model=ProjectState,
+    response_model=ProjectResponse,
     tags=["simulation"],
     summary="Stop (and save) the simulation",
 )
-async def stop_simulation(project_name: str) -> ProjectState:
+async def stop_simulation(project_name: str) -> ProjectResponse:
     """Gracefully stop the simulation. State is saved, agents are frozen.
 
     Raises:
@@ -702,6 +609,14 @@ async def stop_simulation(project_name: str) -> ProjectState:
         allowed=[STATUS_RUNNING, STATUS_PAUSED],
         action="stop",
     )
+
+    # --- Engine integration ---
+    engine = get_engine()
+    if engine.is_registered(project_name):
+        try:
+            await engine.stop(project_name)
+        except Exception as exc:
+            logger.warning("Engine.stop failed for '%s' (non-fatal): %s", project_name, exc)
 
     state["status"] = STATUS_STOPPED
     state["last_updated"] = _now_iso()
@@ -726,6 +641,69 @@ async def stop_simulation(project_name: str) -> ProjectState:
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Engine Status endpoint (Phase 5.1 addition)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/api/projects/{project_name}/simulation/status",
+    response_model=SimulationStatusResponse,
+    tags=["simulation"],
+    summary="Engine-level simulation status (tick metrics, loop state)",
+)
+async def get_simulation_status(project_name: str) -> SimulationStatusResponse:
+    """Return live engine metrics for *project_name* if the engine has it registered.
+
+    Falls back gracefully to the persisted project state if the engine has not
+    yet initialised this project (e.g. after a server restart).
+    """
+    state = await _require_project(project_name)
+    engine = get_engine()
+    if engine.is_registered(project_name):
+        try:
+            eng_status = engine.get_status(project_name)
+            return SimulationStatusResponse(
+                project_name=project_name,
+                status=eng_status["status"],
+                current_phase=eng_status["current_phase"],
+                simulated_day=eng_status["simulated_day"],
+                total_days=eng_status["total_days"],
+                overall_progress=eng_status["overall_progress"],
+                phase_progress=eng_status["phase_progress"],
+                active_agents=eng_status["active_agents"],
+                tick_count=eng_status["tick_count"],
+                tick_interval_seconds=eng_status["tick_interval_seconds"],
+                loop_running=eng_status["loop_running"],
+                pending_decisions=eng_status["pending_decisions"],
+                milestones=eng_status["milestones"],
+                injected_failures=eng_status["injected_failures"],
+                last_updated=eng_status["last_updated"],
+            )
+        except Exception as exc:
+            logger.warning("Engine.get_status failed for '%s': %s", project_name, exc)
+    # Fallback: derive from persisted state
+    simulated_day = state["simulated_day"]
+    total_days = state["total_days"]
+    return SimulationStatusResponse(
+        project_name=project_name,
+        status=state["status"],
+        current_phase=state["current_phase"],
+        simulated_day=simulated_day,
+        total_days=total_days,
+        overall_progress=round(simulated_day / total_days * 100, 2) if total_days else 0.0,
+        phase_progress={},
+        active_agents=state.get("active_agents", []),
+        tick_count=0,
+        tick_interval_seconds=5.0,
+        loop_running=False,
+        pending_decisions=state.get("pending_decisions", []),
+        milestones=state.get("milestones", []),
+        injected_failures=[],
+        last_updated=time.time(),
+    )
 
 
 @router.get(
@@ -882,7 +860,7 @@ async def stream_project_events(
 
 @router.get(
     "/api/projects/{project_name}/feed",
-    response_model=FeedPage,
+    response_model=FeedPageResponse,
     tags=["feed"],
     summary="Paginated historical feed",
 )
@@ -891,7 +869,7 @@ async def get_feed(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=500),
     event_type: Optional[str] = Query(default=None),
-) -> FeedPage:
+) -> FeedPageResponse:
     """Return paginated events from ``feed/events.jsonl``.
 
     Filter by ``event_type`` to narrow results (e.g. ``AGENT_MSG``, ``MEETING_STARTED``).
@@ -916,7 +894,7 @@ async def get_feed(
     total = len(all_events)
     start = (page - 1) * limit
     end = start + limit
-    return FeedPage(
+    return FeedPageResponse(
         events=all_events[start:end],
         total=total,
         page=page,
@@ -977,7 +955,7 @@ async def _load_agent_file(project_name: str, codename: str) -> dict[str, Any] |
 def _agent_summary(
     roster_entry: dict[str, Any],
     live_state: dict[str, Any] | None,
-) -> AgentSummary:
+) -> AgentResponse:
     codename = roster_entry["codename"]
     side = roster_entry["side"]
     personality = None
@@ -985,7 +963,7 @@ def _agent_summary(
         p = live_state.get("personality")
         if p:
             personality = AgentPersonality(**p)
-    return AgentSummary(
+    return AgentResponse(
         codename=codename,
         role=roster_entry["role"],
         side=side,
@@ -999,27 +977,52 @@ def _agent_summary(
 
 @router.get(
     "/api/projects/{project_name}/agents",
-    response_model=list[AgentSummary],
+    response_model=list[AgentResponse],
     tags=["agents"],
     summary="List all 30 agents with current status",
 )
-async def list_agents(project_name: str) -> list[AgentSummary]:
-    """Return status cards for all 30 agents."""
+async def list_agents(project_name: str) -> list[AgentResponse]:
+    """Return status cards for all 30 agents.
+
+    Enriches agent status from the live Conductor when the engine has the
+    project registered (i.e. simulation is running).
+    """
     await _require_project(project_name)
-    results = []
+
+    # Try to pull live agent state from the engine's Conductor
+    engine = get_engine()
+    live_agent_map: dict[str, Any] = {}
+    if engine.is_registered(project_name):
+        try:
+            conductor = engine.get_conductor(project_name)
+            for codename_key, agent_obj in conductor.agents.items():
+                live_agent_map[codename_key] = {
+                    "status": getattr(agent_obj, "status", "idle"),
+                    "current_task": getattr(agent_obj, "current_task", None),
+                    "personality": getattr(agent_obj, "personality", None),
+                    "recent_activity": getattr(agent_obj, "recent_activity", []),
+                }
+        except Exception as exc:
+            logger.debug("Could not pull live agent state from engine: %s", exc)
+
+    results: list[AgentResponse] = []
     for entry in _AGENT_ROSTER:
-        live = await _load_agent_file(project_name, entry["codename"])
+        codename_upper = entry["codename"]
+        if codename_upper in live_agent_map:
+            live = live_agent_map[codename_upper]
+        else:
+            live = await _load_agent_file(project_name, codename_upper)
         results.append(_agent_summary(entry, live))
     return results
 
 
 @router.get(
     "/api/projects/{project_name}/agents/{codename}",
-    response_model=AgentDetail,
+    response_model=AgentDetailResponse,
     tags=["agents"],
     summary="Agent detail — state, memory, personality, activity",
 )
-async def get_agent(project_name: str, codename: str) -> AgentDetail:
+async def get_agent(project_name: str, codename: str) -> AgentDetailResponse:
     """Return full detail for a single agent."""
     await _require_project(project_name)
     codename_upper = codename.upper()
@@ -1032,17 +1035,36 @@ async def get_agent(project_name: str, codename: str) -> AgentDetail:
             detail=f"Unknown agent codename '{codename}'",
         )
 
-    live = await _load_agent_file(project_name, codename_upper)
+    # Try to get live state from engine conductor first
+    live: dict[str, Any] | None = None
+    engine = get_engine()
+    if engine.is_registered(project_name):
+        try:
+            conductor = engine.get_conductor(project_name)
+            agent_obj = conductor.agents.get(codename_upper)
+            if agent_obj:
+                live = {
+                    "status": getattr(agent_obj, "status", "idle"),
+                    "current_task": getattr(agent_obj, "current_task", None),
+                    "personality": getattr(agent_obj, "personality", None),
+                    "memory_turns_count": len(getattr(agent_obj, "_memory", []) or []),
+                    "recent_activity": getattr(agent_obj, "recent_activity", []),
+                }
+        except Exception as exc:
+            logger.debug("Could not pull live agent '%s' from engine: %s", codename_upper, exc)
 
-    summary = _agent_summary(roster_entry, live)
+    if live is None:
+        live = await _load_agent_file(project_name, codename_upper)
+
+    agent_summary = _agent_summary(roster_entry, live)
     memory_file = _project_dir(project_name) / "memory" / f"{codename_upper}_summary.md"
     memory_summary = None
     if memory_file.exists():
         async with aiofiles.open(str(memory_file), "r") as fh:
             memory_summary = await fh.read()
 
-    return AgentDetail(
-        **summary.model_dump(),
+    return AgentDetailResponse(
+        **agent_summary.model_dump(),
         skills=roster_entry.get("skills", []),
         memory_turns=live.get("memory_turns_count", 0) if live else 0,
         memory_summary=memory_summary,
@@ -1052,14 +1074,14 @@ async def get_agent(project_name: str, codename: str) -> AgentDetail:
 
 @router.post(
     "/api/projects/{project_name}/agents/reroll",
-    response_model=list[AgentSummary],
+    response_model=list[AgentResponse],
     tags=["agents"],
     summary="Re-roll customer agent personalities",
 )
 async def reroll_personalities(
     project_name: str,
     req: RerollRequest = RerollRequest(),
-) -> list[AgentSummary]:
+) -> list[AgentResponse]:
     """Re-roll personality axes for customer agents.
 
     Only allowed while the simulation is IDLE (pre-start).
@@ -1138,31 +1160,42 @@ async def reroll_personalities(
 
 @router.get(
     "/api/projects/{project_name}/meetings",
-    response_model=list[MeetingSummary],
+    response_model=list[MeetingResponse],
     tags=["artifacts"],
     summary="List all meeting logs",
 )
-async def list_meetings(project_name: str) -> list[MeetingSummary]:
-    """Return a list of all meetings recorded for this project."""
+async def list_meetings(project_name: str) -> list[MeetingResponse]:
+    """Return a list of all meetings recorded for this project.
+
+    Uses :class:`~artifacts.meeting_logger.MeetingLogger` to load and
+    enumerate archived meeting logs from the project's ``meetings/`` folder.
+    Returns an empty list if no meetings have been logged yet.
+    """
     await _require_project(project_name)
-    meetings_dir = _project_dir(project_name) / "meetings"
-    if not meetings_dir.exists():
+    meeting_logger = await asyncio.get_event_loop().run_in_executor(
+        None, _get_meeting_logger, project_name
+    )
+    archived_ids = meeting_logger.list_archived()
+    if not archived_ids:
         return []
 
-    summaries = []
-    for fp in sorted(meetings_dir.glob("*.json")):
-        async with aiofiles.open(str(fp), "r") as fh:
-            data = json.loads(await fh.read())
+    summaries: list[MeetingResponse] = []
+    for mid in archived_ids:
+        log = meeting_logger.get_log(mid)
+        if log is None:
+            continue
         summaries.append(
-            MeetingSummary(
-                id=data.get("id", fp.stem),
-                title=data.get("title", ""),
-                phase=data.get("phase", ""),
-                simulated_day=data.get("simulated_day", 0),
-                facilitator=data.get("facilitator", ""),
-                participants=data.get("participants", []),
-                duration_turns=data.get("duration_turns", 0),
-                decisions_count=len(data.get("decisions", [])),
+            MeetingResponse(
+                id=log.meeting_id,
+                title=log.title,
+                phase=log.phase,
+                simulated_day=log.simulated_day,
+                facilitator=(
+                    log.participants[0] if log.participants else ""
+                ),
+                participants=log.participants,
+                duration_turns=len(log.transcript),
+                decisions_count=len(log.decisions_made),
             )
         )
     return summaries
@@ -1170,11 +1203,11 @@ async def list_meetings(project_name: str) -> list[MeetingSummary]:
 
 @router.get(
     "/api/projects/{project_name}/meetings/{meeting_id}",
-    response_model=MeetingDetail,
+    response_model=MeetingDetailResponse,
     tags=["artifacts"],
     summary="Full meeting log",
 )
-async def get_meeting(project_name: str, meeting_id: str) -> MeetingDetail:
+async def get_meeting(project_name: str, meeting_id: str) -> MeetingDetailResponse:
     """Return the full meeting transcript, decisions, and action items."""
     await _require_project(project_name)
     meeting_file = _project_dir(project_name) / "meetings" / f"{meeting_id}.json"
@@ -1186,7 +1219,7 @@ async def get_meeting(project_name: str, meeting_id: str) -> MeetingDetail:
     async with aiofiles.open(str(meeting_file), "r") as fh:
         data = json.loads(await fh.read())
     md_path = _project_dir(project_name) / "meetings" / f"{meeting_id}_meeting.md"
-    return MeetingDetail(
+    return MeetingDetailResponse(
         id=data.get("id", meeting_id),
         title=data.get("title", ""),
         phase=data.get("phase", ""),
@@ -1205,87 +1238,184 @@ async def get_meeting(project_name: str, meeting_id: str) -> MeetingDetail:
 
 @router.get(
     "/api/projects/{project_name}/decisions",
-    response_model=DecisionBoard,
+    response_model=DecisionResponse,
     tags=["artifacts"],
     summary="Decision board grouped by status",
 )
-async def get_decisions(project_name: str) -> DecisionBoard:
+async def get_decisions(project_name: str) -> DecisionResponse:
     """Return all decisions grouped by status (pending/approved/rejected/deferred)."""
     await _require_project(project_name)
-    decisions_file = _project_dir(project_name) / "decisions" / "decisions.json"
-    if not decisions_file.exists():
-        return DecisionBoard()
-
-    async with aiofiles.open(str(decisions_file), "r") as fh:
-        all_decisions: list[dict] = json.loads(await fh.read())
-
-    board = DecisionBoard(total=len(all_decisions))
+    artifact_board = await asyncio.get_event_loop().run_in_executor(
+        None, _get_decision_board, project_name
+    )
+    all_decisions = artifact_board.get_board()
+    board = DecisionResponse(total=len(all_decisions))
     for d in all_decisions:
-        s = d.get("status", "pending")
+        d_dict = d.to_dict()
+        s = d.status
         if s == "approved":
-            board.approved.append(d)
+            board.approved.append(d_dict)
         elif s == "rejected":
-            board.rejected.append(d)
+            board.rejected.append(d_dict)
         elif s == "deferred":
-            board.deferred.append(d)
+            board.deferred.append(d_dict)
         else:
-            board.pending.append(d)
+            board.pending.append(d_dict)
+    return board
+
+
+@router.post(
+    "/api/projects/{project_name}/decisions",
+    response_model=DecisionResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["artifacts"],
+    summary="Propose a new decision",
+)
+async def propose_decision(
+    project_name: str,
+    req: ProposeDecisionRequest,
+) -> DecisionResponse:
+    """Propose a new decision and add it to the Decision Board.
+
+    The decision starts with status ``proposed``.  Use the DecisionBoard's
+    vote/resolve cycle (driven by the simulation engine) to progress it.
+
+    Raises:
+        404: Project not found.
+        409: A decision with an identical title proposed by the same agent
+             on the same day already exists (duplicate guard).
+    """
+    await _require_project(project_name)
+
+    from artifacts.decision_board import Decision
+
+    artifact_board = await asyncio.get_event_loop().run_in_executor(
+        None, _get_decision_board, project_name
+    )
+
+    # Duplicate guard: same title + proposer + day
+    existing = artifact_board.get_board()
+    for d in existing:
+        if (
+            d.title.strip().lower() == req.title.strip().lower()
+            and d.proposed_by == req.proposed_by
+            and d.proposed_at_day == req.proposed_at_day
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"A decision titled '{req.title}' proposed by '{req.proposed_by}' "
+                    f"on day {req.proposed_at_day} already exists "
+                    f"(id={d.id})."
+                ),
+            )
+
+    new_decision = Decision(
+        title=req.title,
+        description=req.description,
+        category=req.category,  # type: ignore[arg-type]
+        proposed_by=req.proposed_by,
+        proposed_at_day=req.proposed_at_day,
+        rationale=req.rationale or "",
+        impact_assessment=req.impact_assessment or "",
+        related_meeting_id=req.related_meeting_id,
+    )
+
+    try:
+        artifact_board.propose_decision(new_decision)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    # Persist synchronously (DecisionBoard.save is sync)
+    await asyncio.get_event_loop().run_in_executor(None, artifact_board.save)
+
+    # Return the full board state so callers can see the new decision in context
+    all_decisions = artifact_board.get_board()
+    board = DecisionResponse(total=len(all_decisions))
+    for d in all_decisions:
+        d_dict = d.to_dict()
+        s = d.status
+        if s == "approved":
+            board.approved.append(d_dict)
+        elif s == "rejected":
+            board.rejected.append(d_dict)
+        elif s == "deferred":
+            board.deferred.append(d_dict)
+        else:
+            board.pending.append(d_dict)
     return board
 
 
 @router.get(
     "/api/projects/{project_name}/tools",
-    response_model=ToolRegistryResponse,
+    response_model=ToolResponse,
     tags=["artifacts"],
     summary="Tool registry",
 )
-async def get_tools(project_name: str) -> ToolRegistryResponse:
+async def get_tools(project_name: str) -> ToolResponse:
     """Return the tool registry — all tools invented by agents during the simulation."""
     await _require_project(project_name)
-    registry_file = _project_dir(project_name) / "tools" / "tool_registry.json"
-    if not registry_file.exists():
-        return ToolRegistryResponse(tools=[], total=0)
-
-    async with aiofiles.open(str(registry_file), "r") as fh:
-        tools: list[dict] = json.loads(await fh.read())
-    return ToolRegistryResponse(tools=tools, total=len(tools))
+    registry = await asyncio.get_event_loop().run_in_executor(
+        None, _get_tool_registry, project_name
+    )
+    all_tools = registry.get_all_tools()
+    return ToolResponse(
+        tools=[t.to_dict() for t in all_tools],
+        total=len(all_tools),
+    )
 
 
 @router.get(
     "/api/projects/{project_name}/test-strategy",
-    response_model=TestStrategyResponse,
+    response_model=TestCaseResponse,
     tags=["artifacts"],
     summary="Current test strategy",
 )
-async def get_test_strategy(project_name: str) -> TestStrategyResponse:
+async def get_test_strategy(project_name: str) -> TestCaseResponse:
     """Return the live test strategy document."""
     await _require_project(project_name)
-    ts_file = _project_dir(project_name) / "artifacts" / "test_strategy.json"
-    if not ts_file.exists():
-        return TestStrategyResponse()
-
-    async with aiofiles.open(str(ts_file), "r") as fh:
-        data = json.loads(await fh.read())
-    return TestStrategyResponse(**data)
+    ts = await asyncio.get_event_loop().run_in_executor(
+        None, _get_test_strategy, project_name
+    )
+    coverage = ts.get_coverage_report()
+    return TestCaseResponse(
+        tests=[tc.to_dict() for tc in ts.all_tests()],
+        overall_progress=float(coverage.get("pass_rate", 0.0)) * 100,
+        coverage=coverage,
+    )
 
 
 @router.get(
     "/api/projects/{project_name}/lessons",
-    response_model=LessonsResponse,
+    response_model=LessonResponse,
     tags=["artifacts"],
     summary="Lessons learned log",
 )
-async def get_lessons(project_name: str) -> LessonsResponse:
+async def get_lessons(project_name: str) -> LessonResponse:
     """Return all lessons learned, with validation counts."""
     await _require_project(project_name)
-    lessons_file = _project_dir(project_name) / "artifacts" / "lessons_learned.json"
-    if not lessons_file.exists():
-        return LessonsResponse(lessons=[], total=0)
-
-    async with aiofiles.open(str(lessons_file), "r") as fh:
-        all_lessons: list[dict] = json.loads(await fh.read())
-    lessons = [LessonEntry(**l) for l in all_lessons]
-    return LessonsResponse(lessons=lessons, total=len(lessons))
+    collector = await asyncio.get_event_loop().run_in_executor(
+        None, _get_lessons_collector, project_name
+    )
+    all_lessons = collector.all_lessons()
+    entries: list[LessonEntry] = []
+    for l in all_lessons:
+        entries.append(
+            LessonEntry(
+                id=l.id,
+                raised_by=l.reported_by,
+                phase=l.phase,
+                day=l.reported_at_day,
+                category=l.category,
+                lesson=l.description,
+                validation_count=0,
+                validated_by=[],
+            )
+        )
+    return LessonResponse(lessons=entries, total=len(entries))
 
 
 @router.get(
@@ -1323,6 +1453,73 @@ async def get_report(project_name: str) -> dict:
     async with aiofiles.open(str(report_file), "w") as fh:
         await fh.write(report)
     return {"project_name": project_name, "content": report, "generated": True}
+
+
+@router.post(
+    "/api/projects/{project_name}/artifacts/report",
+    response_model=ArtifactResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["artifacts"],
+    summary="Trigger full report generation via FinalReportGenerator",
+)
+async def generate_artifact_report(
+    project_name: str,
+    req: ArtifactReportRequest = ArtifactReportRequest(),
+) -> ArtifactResponse:
+    """Trigger :class:`~artifacts.final_report.FinalReportGenerator` to compile
+    all project artifacts into a comprehensive Markdown report.
+
+    The report is written to ``projects/<project_name>/final_report.md`` and
+    also returned inline in the response body.
+
+    - If a report already exists and ``force_regenerate`` is ``False``, the
+      cached copy is returned without re-generating.
+    - Set ``force_regenerate=True`` to always rebuild from current artifact state.
+
+    Raises:
+        404: Project not found.
+    """
+    await _require_project(project_name)
+
+    report_file = _project_dir(project_name) / "artifacts" / "final_report.md"
+
+    if report_file.exists() and not req.force_regenerate:
+        async with aiofiles.open(str(report_file), "r") as fh:
+            content = await fh.read()
+        return ArtifactResponse(
+            project_name=project_name,
+            content=content,
+            generated=False,
+        )
+
+    def _run_generator() -> str:
+        from artifacts.final_report import FinalReportGenerator
+        from utils.persistence import PROJECTS_BASE
+
+        gen = FinalReportGenerator(
+            project_name=project_name,
+            projects_root=str(PROJECTS_BASE),
+        )
+        report_text = gen.generate_report(project_name)
+        gen.save_report(report_text, project_name)
+        return report_text
+
+    try:
+        content = await asyncio.get_event_loop().run_in_executor(None, _run_generator)
+    except Exception as exc:
+        logger.error(
+            "FinalReportGenerator failed for '%s': %s", project_name, exc, exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Report generation failed: {exc}",
+        ) from exc
+
+    return ArtifactResponse(
+        project_name=project_name,
+        content=content,
+        generated=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1412,11 +1609,20 @@ async def admin_health() -> AdminHealthResponse:
     active_agents = 0
     phase_summaries = []
 
+    engine = get_engine()
     for name in names:
         state = await load_project_state(name)
         if state and state["status"] == STATUS_RUNNING:
             active_projects += 1
-            active_agents += len(state.get("active_agents", []))
+            # Prefer engine-reported active agents when available
+            if engine.is_registered(name):
+                try:
+                    eng_status = engine.get_status(name)
+                    active_agents += len(eng_status["active_agents"])
+                except Exception:
+                    active_agents += len(state.get("active_agents", []))
+            else:
+                active_agents += len(state.get("active_agents", []))
             phase_summaries.append({
                 "project": name,
                 "phase": state["current_phase"],
@@ -1427,8 +1633,8 @@ async def admin_health() -> AdminHealthResponse:
         status="ok",
         active_projects=active_projects,
         active_agents=active_agents,
-        tokens_per_minute=0.0,    # populated by engine when running
-        total_tokens_used=0,      # populated by engine when running
+        tokens_per_minute=0.0,    # populated by engine telemetry in later phase
+        total_tokens_used=0,
         phase_summaries=phase_summaries,
         uptime_seconds=round(time.monotonic() - _SERVER_START, 1),
     )
