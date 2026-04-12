@@ -10,6 +10,7 @@ Example:
     from artifacts import SimulatedTool, ToolRegistry
     from artifacts import TestCase, TestStrategy, TestType, TestStatus
     from artifacts import Lesson, LessonsCollector
+    from artifacts import FinalReportGenerator
 """
 
 from artifacts.meeting_logger import MeetingLog, MeetingLogger, TranscriptTurn
@@ -17,6 +18,7 @@ from artifacts.decision_board import Decision, DecisionBoard
 from artifacts.tool_registry import SimulatedTool, ToolRegistry, ToolUsageEvent
 from artifacts.test_strategy import TestCase, TestStrategy, TestType, TestStatus
 from artifacts.lessons_learned import Lesson, LessonsCollector
+from artifacts.final_report import FinalReportGenerator
 
 __all__ = [
     # Meeting Logger (Phase 4.1)
@@ -38,4 +40,6 @@ __all__ = [
     # Lessons Learned (Phase 4.4)
     "Lesson",
     "LessonsCollector",
+    # Final Report Generator (Phase 4.5)
+    "FinalReportGenerator",
 ]
