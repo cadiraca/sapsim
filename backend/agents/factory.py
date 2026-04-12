@@ -345,3 +345,60 @@ def list_codenames(side: Optional[str] = None) -> list[str]:
         result = sorted(_ROLE_REGISTRY.keys())
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# 7. AgentFactory — class façade over the module-level functions
+#    Provides a single importable name for code/tests that expect a class.
+# ---------------------------------------------------------------------------
+
+class AgentFactory:
+    """
+    Thin façade class that exposes the module-level factory functions as
+    static / class methods.  Exists primarily so that integration tests and
+    external code can do ``from agents.factory import AgentFactory`` without
+    breaking the existing function-based API.
+    """
+
+    @staticmethod
+    async def create_agent(
+        codename: str,
+        project_name: str,
+        litellm_client: "LiteLLMClient",
+        personality: Optional[dict[str, Any]] = None,
+        personality_seed: Optional[int] = None,
+    ) -> BaseAgent:
+        """Delegate to module-level :func:`create_agent`."""
+        return await create_agent(
+            codename=codename,
+            project_name=project_name,
+            litellm_client=litellm_client,
+            personality=personality,
+            personality_seed=personality_seed,
+        )
+
+    @staticmethod
+    async def create_all_agents(
+        project_name: str,
+        litellm_client: "LiteLLMClient",
+        personality_overrides: Optional[dict[str, dict[str, Any]]] = None,
+        personality_seeds: Optional[dict[str, int]] = None,
+    ) -> dict[str, BaseAgent]:
+        """Delegate to module-level :func:`create_all_agents`."""
+        return await create_all_agents(
+            project_name=project_name,
+            litellm_client=litellm_client,
+            personality_overrides=personality_overrides,
+            personality_seeds=personality_seeds,
+        )
+
+    @staticmethod
+    def list_codenames(side: Optional[str] = None) -> list[str]:
+        """Delegate to module-level :func:`list_codenames`."""
+        return list_codenames(side=side)
+
+    @staticmethod
+    def resolve_role_class(codename: str) -> type[BaseAgent]:
+        """Delegate to module-level :func:`_resolve_role_class`."""
+        return _resolve_role_class(codename)
+
