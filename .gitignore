@@ -39,3 +39,15 @@ pnpm-debug.log*
 # IDE
 .vscode/
 .idea/
+
+# SAP SIM runtime data (per-project state, not committed)
+projects/*/state.json
+projects/*/artifacts/
+
+# Test output
+.pytest_cache/
+coverage/
+*.coverage
+
+# TypeScript build info
+tsconfig.tsbuildinfo
