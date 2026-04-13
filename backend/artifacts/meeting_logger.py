@@ -1,12 +1,14 @@
 """
 SAP SIM — Meeting Logger Artifact
-Phase: 4.1
+Phase: 7.5
 Purpose: Provides MeetingLog dataclass and MeetingLogger class for capturing,
          storing, and rendering simulation meeting transcripts as structured
          data and formatted Markdown documents.
 
+Persistence: SQLite via utils.persistence.get_db() (db.save_meeting / db.get_meetings).
+
 Usage:
-    logger = MeetingLogger()
+    logger = MeetingLogger(project_name="my-sap-project")
 
     log = logger.start_log(MeetingLog(
         meeting_id="kickoff-day1",
@@ -21,8 +23,9 @@ Usage:
     logger.add_turn("kickoff-day1", "Alex", "Welcome everyone to the kickoff!")
     logger.add_decision("kickoff-day1", "Use S/4HANA 2023 FPS02 as target release.")
     logger.add_action_item("kickoff-day1", {"owner": "Sara", "task": "Draft architecture blueprint", "due_day": 5})
-    log = logger.finalize_log("kickoff-day1")
+    log = await logger.finalize_log("kickoff-day1")
 
+    meetings = await logger.get_meetings()
     logger.save_as_markdown(log, "/tmp/kickoff-day1.md")
 """
 
@@ -33,6 +36,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+from utils.persistence import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +95,16 @@ class MeetingLogger:
     """
     Lifecycle manager for :class:`MeetingLog` objects.
 
+    Parameters
+    ----------
+    project_name:
+        Project identifier used as the ``project_id`` in all DB calls.
+
     Thread-safety: not thread-safe; wrap in a lock if concurrent access is needed.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, project_name: str) -> None:
+        self.project_name = project_name
         self._active: dict[str, MeetingLog] = {}    # meeting_id → in-progress log
         self._archive: dict[str, MeetingLog] = {}   # meeting_id → finalised log
 
@@ -145,9 +156,10 @@ class MeetingLogger:
         log = self._get_active(meeting_id)
         log.action_items.append(dict(item))   # store a copy
 
-    def finalize_log(self, meeting_id: str) -> MeetingLog:
+    async def finalize_log(self, meeting_id: str) -> MeetingLog:
         """
-        Mark *meeting_id* as finalised, compute duration, and move it to the archive.
+        Mark *meeting_id* as finalised, compute duration, move it to the archive,
+        and persist it to the SQLite database via db.save_meeting().
 
         Returns the finalised :class:`MeetingLog`.
         Raises :exc:`ValueError` if meeting_id is not active.
@@ -166,7 +178,52 @@ class MeetingLogger:
             len(log.decisions_made),
             len(log.action_items),
         )
+
+        # Persist to SQLite
+        db = get_db()
+        meeting_dict = {
+            "id":             log.meeting_id,
+            "title":          log.title,
+            "meeting_type":   log.meeting_type,
+            "phase":          log.phase,
+            "participants":   log.participants,
+            "transcript":     [
+                {"speaker": t.speaker, "text": t.text, "timestamp": t.timestamp}
+                for t in log.transcript
+            ],
+            "decisions_made": log.decisions_made,
+            "action_items":   log.action_items,
+            "duration_minutes": log.duration_minutes,
+            "simulated_day":  log.simulated_day,
+        }
+        await db.save_meeting(self.project_name, meeting_dict)
+        logger.debug("MeetingLogger: persisted '%s' to SQLite", meeting_id)
+
         return log
+
+    async def get_meetings(
+        self,
+        phase: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """
+        Query the database for meetings belonging to this project.
+
+        Parameters
+        ----------
+        phase:
+            When supplied, only meetings in this SAP ACTIVATE phase are returned.
+        limit:
+            Maximum number of rows to return (default 50).
+
+        Returns
+        -------
+        list[dict]
+            Each item is a plain dict with all JSON columns deserialised,
+            as returned by :meth:`~backend.db.repository.Database.get_meetings`.
+        """
+        db = get_db()
+        return await db.get_meetings(self.project_name, phase=phase, limit=limit)
 
     def get_log(self, meeting_id: str) -> Optional[MeetingLog]:
         """Return a log whether active or archived; ``None`` if not found."""
@@ -177,7 +234,7 @@ class MeetingLogger:
         return list(self._active.keys())
 
     def list_archived(self) -> list[str]:
-        """Return IDs of finalised meetings."""
+        """Return IDs of finalised meetings (in-memory archive only)."""
         return list(self._archive.keys())
 
     # ------------------------------------------------------------------

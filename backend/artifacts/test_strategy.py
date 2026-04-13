@@ -1,10 +1,13 @@
 """
 SAP SIM — Test Strategy
-Phase: 4.4
+Phase: 7.5
 
 Manages test cases and test coverage for SAP implementation simulations.
 Supports unit, integration, UAT, regression, and performance test types.
 Tracks test status lifecycle, defect linkage, and produces coverage reports.
+
+Persistence: SQLite via utils.persistence.get_db()
+    (db.save_test_case / db.update_test_status / db.get_test_cases / db.get_coverage_stats)
 
 Example:
     from artifacts.test_strategy import TestCase, TestStrategy, TestType, TestStatus
@@ -21,18 +24,18 @@ Example:
         steps=["Open FB50", "Enter document data", "Post"],
         expected_result="Document posted successfully",
     )
-    strategy.add_test(tc)
-    strategy.update_status("TC-001", TestStatus.PASSED, actual_result="Document posted, doc# 100000001")
-    print(strategy.get_coverage_report())
+    await strategy.add_test(tc)
+    await strategy.update_status("TC-001", TestStatus.PASSED, actual_result="Document posted, doc# 100000001")
+    print(await strategy.get_coverage_report())
 """
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional
+
+from utils.persistence import get_db
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +84,8 @@ class TestCase:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["type"] = self.type.value
-        d["status"] = self.status.value
+        d["type"] = self.type.value if hasattr(self.type, "value") else self.type
+        d["status"] = self.status.value if hasattr(self.status, "value") else self.status
         return d
 
     @classmethod
@@ -101,7 +104,12 @@ class TestStrategy:
     """
     Manages the full test strategy for a SAP simulation project.
 
-    Persists to ``projects/<name>/test_strategy.json``.
+    Persists to SQLite via :func:`utils.persistence.get_db`.
+
+    Parameters
+    ----------
+    project_name:
+        Project identifier used as ``project_id`` in all DB calls.
     """
 
     def __init__(self, project_name: str):
@@ -112,13 +120,20 @@ class TestStrategy:
     # CRUD
     # -----------------------------------------------------------------------
 
-    def add_test(self, test: TestCase) -> None:
-        """Add a test case. Raises ValueError if the ID already exists."""
+    async def add_test(self, test: TestCase) -> None:
+        """
+        Add a test case to in-memory store and persist to SQLite.
+
+        Raises ValueError if the ID already exists in memory.
+        """
         if test.id in self._tests:
             raise ValueError(f"Test case '{test.id}' already exists.")
         self._tests[test.id] = test
 
-    def update_status(
+        db = get_db()
+        await db.save_test_case(self.project_name, test.to_dict())
+
+    async def update_status(
         self,
         test_id: str,
         status: TestStatus,
@@ -127,7 +142,9 @@ class TestStrategy:
     ) -> TestCase:
         """
         Update the status (and optionally the actual result / defect ID) of
-        an existing test case.  Returns the updated TestCase.
+        an existing test case in-memory and in the DB.
+
+        Returns the updated TestCase.
         """
         if test_id not in self._tests:
             raise KeyError(f"Test case '{test_id}' not found.")
@@ -137,26 +154,36 @@ class TestStrategy:
             tc.actual_result = actual_result
         if defect_id is not None:
             tc.defect_id = defect_id
+
+        db = get_db()
+        await db.update_test_status(test_id, status, result=actual_result)
+
+        # If defect_id changed, do a full re-save to capture it
+        if defect_id is not None:
+            await db.save_test_case(self.project_name, tc.to_dict())
+
         return tc
 
     def get_test(self, test_id: str) -> TestCase:
-        """Return a single test case by ID."""
+        """Return a single test case by ID from the in-memory store."""
         if test_id not in self._tests:
             raise KeyError(f"Test case '{test_id}' not found.")
         return self._tests[test_id]
 
     def all_tests(self) -> list[TestCase]:
-        """Return all test cases sorted by priority then ID."""
+        """Return all in-memory test cases sorted by priority then ID."""
         return sorted(self._tests.values(), key=lambda t: (t.priority, t.id))
 
     # -----------------------------------------------------------------------
     # Reporting
     # -----------------------------------------------------------------------
 
-    def get_coverage_report(self) -> dict:
+    async def get_coverage_report(self) -> dict:
         """
         Returns a dict summarising test coverage across modules, types, and
-        statuses.
+        statuses, computed by the database.
+
+        Delegates to :meth:`~backend.db.repository.Database.get_coverage_stats`.
 
         Structure::
 
@@ -169,94 +196,33 @@ class TestStrategy:
                 "defect_count": int,
             }
         """
-        tests = list(self._tests.values())
-        total = len(tests)
+        db = get_db()
+        return await db.get_coverage_stats(self.project_name)
 
-        by_status: dict[str, int] = {s.value: 0 for s in TestStatus}
-        by_type: dict[str, int] = {t.value: 0 for t in TestType}
-        by_module: dict[str, dict[str, int]] = {}
+    async def get_test_cases_from_db(
+        self,
+        status: Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Query test cases from the database, optionally filtered by *status*.
 
-        defect_count = 0
-
-        for tc in tests:
-            by_status[tc.status.value] += 1
-            by_type[tc.type.value] += 1
-
-            if tc.module not in by_module:
-                by_module[tc.module] = {s.value: 0 for s in TestStatus}
-                by_module[tc.module]["total"] = 0
-            by_module[tc.module][tc.status.value] += 1
-            by_module[tc.module]["total"] += 1
-
-            if tc.defect_id:
-                defect_count += 1
-
-        executed = by_status[TestStatus.PASSED.value] + by_status[TestStatus.FAILED.value]
-        pass_rate = (
-            by_status[TestStatus.PASSED.value] / executed if executed > 0 else 0.0
-        )
-
-        return {
-            "total": total,
-            "by_status": by_status,
-            "by_type": by_type,
-            "by_module": by_module,
-            "pass_rate": round(pass_rate, 4),
-            "defect_count": defect_count,
-        }
+        Returns a list of plain dicts as returned by
+        :meth:`~backend.db.repository.Database.get_test_cases`.
+        """
+        db = get_db()
+        return await db.get_test_cases(self.project_name, status=status)
 
     def get_defects(self) -> list[TestCase]:
-        """Return all test cases that have a linked defect ID."""
+        """Return all in-memory test cases that have a linked defect ID."""
         return [tc for tc in self._tests.values() if tc.defect_id]
 
     def get_by_status(self, status: TestStatus) -> list[TestCase]:
-        """Return all test cases with a given status."""
+        """Return all in-memory test cases with a given status."""
         return [tc for tc in self._tests.values() if tc.status == status]
 
     def get_by_module(self, module: str) -> list[TestCase]:
-        """Return all test cases for a given SAP module."""
+        """Return all in-memory test cases for a given SAP module."""
         return [tc for tc in self._tests.values() if tc.module == module]
-
-    # -----------------------------------------------------------------------
-    # Persistence
-    # -----------------------------------------------------------------------
-
-    def _project_dir(self) -> str:
-        base = os.path.join(
-            os.path.dirname(__file__), "..", "..", "projects", self.project_name
-        )
-        return os.path.normpath(base)
-
-    def _file_path(self) -> str:
-        return os.path.join(self._project_dir(), "test_strategy.json")
-
-    def save(self) -> str:
-        """Persist all test cases to disk.  Returns the file path written."""
-        os.makedirs(self._project_dir(), exist_ok=True)
-        payload = {
-            "project": self.project_name,
-            "tests": [tc.to_dict() for tc in self.all_tests()],
-        }
-        path = self._file_path()
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=False)
-        return path
-
-    @classmethod
-    def load(cls, project_name: str) -> "TestStrategy":
-        """Load a TestStrategy from its persisted JSON file."""
-        instance = cls(project_name)
-        base = os.path.join(
-            os.path.dirname(__file__), "..", "..", "projects", project_name
-        )
-        path = os.path.normpath(os.path.join(base, "test_strategy.json"))
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"No test strategy file found at '{path}'.")
-        with open(path, encoding="utf-8") as fh:
-            payload = json.load(fh)
-        for item in payload.get("tests", []):
-            instance._tests[item["id"]] = TestCase.from_dict(item)
-        return instance
 
     # -----------------------------------------------------------------------
     # Dunder helpers

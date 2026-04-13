@@ -1,6 +1,6 @@
 """
 SAP SIM — Decision Board Artifact
-Phase: 4.2
+Phase: 7.5
 Purpose: Provides the Decision dataclass and DecisionBoard class for tracking,
          voting on, and resolving project decisions throughout a SAP simulation.
 
@@ -11,8 +11,7 @@ Voting uses a simple majority model: once the approval threshold is reached
 (default 70 % of cast votes), ``auto_resolve`` will flip the status to
 ``approved``; if the rejection threshold is reached, it becomes ``rejected``.
 
-Persistence: decisions are stored in
-    projects/<project_name>/decisions.json
+Persistence: SQLite via utils.persistence.get_db() (db.save_decision / db.update_decision).
 
 Usage::
 
@@ -25,26 +24,23 @@ Usage::
         proposed_by="Alex",
         proposed_at_day=3,
     ))
+    await board.save_decision_to_db(d)
 
     board.vote(d.id, agent_id="Sara",  vote="approve",
                reasoning="Fits our cloud-first strategy.")
-    board.vote(d.id, agent_id="Leila", vote="approve",
-               reasoning="Lower TCO long-term.")
-    board.vote(d.id, agent_id="Omar",  vote="reject",
-               reasoning="Change management risk too high.")
-
-    resolved = board.auto_resolve(d.id)  # returns Decision if resolved
-    board.save()
+    resolved = board.auto_resolve(d.id, current_day=4)
+    if resolved:
+        await board.update_decision_in_db(resolved.id, {"status": resolved.status, "resolved_day": resolved.resolved_at_day})
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any, Literal, Optional
+
+from utils.persistence import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +122,7 @@ class Decision:
         )
 
     # ------------------------------------------------------------------
-    # Serialisation helpers (used by DecisionBoard internally)
+    # Serialisation helpers
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
@@ -149,11 +145,7 @@ class DecisionBoard:
     Parameters
     ----------
     project_name:
-        Used to build the persistence path
-        ``projects/<project_name>/decisions.json``.
-    projects_root:
-        Base directory that contains project sub-directories.
-        Defaults to ``projects/`` relative to the current working directory.
+        Used as ``project_id`` in all DB calls.
     consensus_threshold:
         Fraction of *active* (non-abstain) votes that must be ``approve``
         for :meth:`auto_resolve` to mark a decision ``approved``.
@@ -165,77 +157,13 @@ class DecisionBoard:
     def __init__(
         self,
         project_name: str,
-        projects_root: str | Path = "projects",
         consensus_threshold: float = 0.70,
     ) -> None:
         self.project_name = project_name
-        self.projects_root = Path(projects_root).expanduser().resolve()
         self.consensus_threshold = consensus_threshold
 
         # In-memory store: decision_id → Decision
         self._decisions: dict[str, Decision] = {}
-
-        # Load from disk if a save file already exists
-        if self._persistence_path.exists():
-            self.load()
-
-    # ------------------------------------------------------------------
-    # Persistence helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def _persistence_path(self) -> Path:
-        return self.projects_root / self.project_name / "decisions.json"
-
-    def save(self) -> Path:
-        """
-        Persist all decisions to ``projects/<project_name>/decisions.json``.
-
-        Creates parent directories if necessary.
-        Returns the resolved path that was written.
-        """
-        dest = self._persistence_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "project": self.project_name,
-            "consensus_threshold": self.consensus_threshold,
-            "decisions": [d.to_dict() for d in self._decisions.values()],
-        }
-        dest.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        logger.info("DecisionBoard: saved %d decision(s) → %s", len(self._decisions), dest)
-        return dest
-
-    def load(self) -> None:
-        """
-        Load decisions from ``projects/<project_name>/decisions.json``.
-
-        Silently returns if the file does not exist.
-        Raises :exc:`ValueError` on malformed JSON.
-        """
-        src = self._persistence_path
-        if not src.exists():
-            logger.debug("DecisionBoard: no save file at %s — starting fresh", src)
-            return
-        try:
-            raw = json.loads(src.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed decisions.json at {src}: {exc}") from exc
-
-        # Optionally restore threshold from file
-        if "consensus_threshold" in raw:
-            self.consensus_threshold = float(raw["consensus_threshold"])
-
-        self._decisions = {}
-        for item in raw.get("decisions", []):
-            try:
-                d = Decision.from_dict(item)
-                self._decisions[d.id] = d
-            except (TypeError, KeyError) as exc:
-                logger.warning("DecisionBoard: skipping malformed decision entry: %s", exc)
-
-        logger.info(
-            "DecisionBoard: loaded %d decision(s) from %s", len(self._decisions), src
-        )
 
     # ------------------------------------------------------------------
     # Core API
@@ -247,6 +175,9 @@ class DecisionBoard:
 
         Returns the same :class:`Decision` for chaining.
         Raises :exc:`ValueError` if a decision with the same ID already exists.
+
+        .. note::
+            Call :meth:`save_decision_to_db` immediately after to persist.
         """
         if decision.id in self._decisions:
             raise ValueError(
@@ -262,6 +193,24 @@ class DecisionBoard:
             decision.category,
         )
         return decision
+
+    async def save_decision_to_db(self, decision: Decision) -> None:
+        """Persist *decision* to SQLite via db.save_decision()."""
+        db = get_db()
+        await db.save_decision(self.project_name, decision.to_dict())
+        logger.debug("DecisionBoard: persisted decision '%s' to SQLite", decision.id)
+
+    async def update_decision_in_db(
+        self, decision_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Apply a partial update to an existing decision row via db.update_decision()."""
+        db = get_db()
+        await db.update_decision(decision_id, updates)
+        logger.debug(
+            "DecisionBoard: updated decision '%s' in SQLite (fields: %s)",
+            decision_id,
+            list(updates.keys()),
+        )
 
     def vote(
         self,
@@ -282,6 +231,10 @@ class DecisionBoard:
 
         Returns the updated :class:`Decision`.
         Raises :exc:`ValueError` if *decision_id* is unknown or already resolved.
+
+        .. note::
+            Call :meth:`update_decision_in_db` with ``{"votes": d.votes}``
+            after this to persist the updated vote tally.
         """
         d = self._get_decision(decision_id)
         if d.status in ("approved", "rejected"):
@@ -351,6 +304,9 @@ class DecisionBoard:
 
         *current_day* is recorded as ``resolved_at_day`` when provided.
         Returns the resolved :class:`Decision`, or ``None`` if not yet resolved.
+
+        .. note::
+            Call :meth:`update_decision_in_db` to persist the resolution.
         """
         d = self._get_decision(decision_id)
 
@@ -383,8 +339,6 @@ class DecisionBoard:
             )
             return d
 
-        # Rejection: symmetric — requires the same threshold of reject votes
-        # (e.g. 70 % reject needed to auto-reject when threshold is 70 %)
         if reject_ratio >= self.consensus_threshold:
             d.status = "rejected"
             d.resolved_at_day = current_day
@@ -407,93 +361,66 @@ class DecisionBoard:
     # Query / filter API
     # ------------------------------------------------------------------
 
-    def get_board(
+    async def get_board(
         self,
         filters: Optional[dict[str, Any]] = None,
-    ) -> list[Decision]:
+    ) -> list[dict[str, Any]]:
         """
-        Return decisions matching *filters*.
+        Query the database for decisions belonging to this project.
+
+        When *filters* contains ``"status"``, only decisions matching that
+        status are returned; other filter keys are applied client-side after
+        the DB fetch.
 
         Supported filter keys
         ~~~~~~~~~~~~~~~~~~~~~
-        ``status`` : str or list[str]
-            e.g. ``"proposed"`` or ``["proposed", "discussed"]``
-        ``category`` : str or list[str]
-            e.g. ``"technical"``
+        ``status`` : str
+            e.g. ``"proposed"``, ``"approved"``; passed directly to the DB query.
+        ``category`` : str
+            Filter by decision category (applied post-fetch).
         ``proposed_by`` : str
-            Agent ID of the proposer.
-        ``related_meeting_id`` : str
-            Limit to decisions from a specific meeting.
-        ``resolved_at_day_lte`` : int
-            Decisions resolved on or before this simulated day.
-        ``proposed_at_day_gte`` : int
-            Decisions proposed on or after this simulated day.
+            Filter by proposer agent ID (applied post-fetch).
 
-        If *filters* is ``None`` or ``{}``, all decisions are returned in
-        proposal order (by ``proposed_at_day``, then ``id``).
+        Returns
+        -------
+        list[dict]
+            Dicts as returned by :meth:`~backend.db.repository.Database.get_decisions`.
         """
-        results = list(self._decisions.values())
+        db = get_db()
+        status_filter = filters.get("status") if filters else None
+        results = await db.get_decisions(self.project_name, status=status_filter)
 
-        if not filters:
-            return self._sort(results)
+        # Client-side filters for keys not handled by the DB layer
+        if filters:
+            if "category" in filters:
+                results = [r for r in results if r.get("category") == filters["category"]]
+            if "proposed_by" in filters:
+                results = [r for r in results if r.get("proposed_by") == filters["proposed_by"]]
 
-        # status filter
-        if "status" in filters:
-            allowed = (
-                {filters["status"]}
-                if isinstance(filters["status"], str)
-                else set(filters["status"])
-            )
-            results = [d for d in results if d.status in allowed]
+        return results
 
-        # category filter
-        if "category" in filters:
-            allowed = (
-                {filters["category"]}
-                if isinstance(filters["category"], str)
-                else set(filters["category"])
-            )
-            results = [d for d in results if d.category in allowed]
-
-        # proposed_by filter
-        if "proposed_by" in filters:
-            results = [d for d in results if d.proposed_by == filters["proposed_by"]]
-
-        # related_meeting_id filter
-        if "related_meeting_id" in filters:
-            mid = filters["related_meeting_id"]
-            results = [d for d in results if d.related_meeting_id == mid]
-
-        # resolved_at_day_lte filter
-        if "resolved_at_day_lte" in filters:
-            lte = int(filters["resolved_at_day_lte"])
-            results = [
-                d for d in results
-                if d.resolved_at_day is not None and d.resolved_at_day <= lte
-            ]
-
-        # proposed_at_day_gte filter
-        if "proposed_at_day_gte" in filters:
-            gte = int(filters["proposed_at_day_gte"])
-            results = [d for d in results if d.proposed_at_day >= gte]
-
-        return self._sort(results)
-
-    def get_pending(self) -> list[Decision]:
+    async def get_pending(self) -> list[dict[str, Any]]:
         """
-        Return all unresolved decisions (status is ``proposed`` or ``discussed``).
+        Return all unresolved decisions (status ``proposed`` or ``discussed``)
+        by querying the database.
 
-        These are decisions that still require a vote or resolution.
+        Returns
+        -------
+        list[dict]
+            Pending decision dicts from the DB.
         """
-        return self.get_board(filters={"status": ["proposed", "discussed"]})
+        db = get_db()
+        proposed = await db.get_decisions(self.project_name, status="proposed")
+        discussed = await db.get_decisions(self.project_name, status="discussed")
+        return proposed + discussed
 
     def get_decision(self, decision_id: str) -> Optional[Decision]:
-        """Return a decision by ID, or ``None`` if not found."""
+        """Return an in-memory decision by ID, or ``None`` if not found."""
         return self._decisions.get(decision_id)
 
     def summary(self) -> dict[str, Any]:
         """
-        Return a high-level counts summary of all decisions on the board.
+        Return a high-level counts summary of all in-memory decisions.
 
         Example return value::
 

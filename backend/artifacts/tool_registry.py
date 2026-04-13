@@ -1,6 +1,6 @@
 """
 SAP SIM — Tool Registry Artifact
-Phase: 4.3
+Phase: 7.5
 Purpose: Tracks the SAP tool landscape within a simulation — which tools have
          been announced, who is using them, and how frequently they are accessed.
 
@@ -13,15 +13,12 @@ Lifecycle:
     announced → in_use → (deprecated)
 
 Key operations:
-    ToolRegistry.announce_tool(tool)               – agent declares a new tool
-    ToolRegistry.use_tool(tool_id, agent_id, ctx)  – record a tool interaction
-    ToolRegistry.get_tools(**filters)              – query the catalogue
+    ToolRegistry.announce_tool(tool)               – agent declares a new tool; persists to DB
+    ToolRegistry.use_tool(tool_id, agent_id, ctx)  – record a tool interaction; increments DB counter
+    ToolRegistry.get_tools(**filters)              – query the DB catalogue
     ToolRegistry.get_usage_stats()                 – summary statistics
-    ToolRegistry.save() / ToolRegistry.load()      – JSON persistence
 
-Persistence::
-
-    projects/<project_name>/tools.json
+Persistence: SQLite via utils.persistence.get_db() (db.save_tool / db.update_tool_usage).
 
 Usage::
 
@@ -37,20 +34,20 @@ Usage::
         announced_by="Leila",
         announced_at_day=2,
     ))
+    await registry.persist_tool(t)
 
-    registry.use_tool(t.id, agent_id="Sara", context="Monthly AR close")
-    registry.save()
+    await registry.use_tool(t.id, agent_id="Sara", context="Monthly AR close")
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+
+from utils.persistence import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +120,7 @@ class SimulatedTool:
         )
 
     # ------------------------------------------------------------------
-    # Serialisation helpers (for JSON round-trips)
+    # Serialisation helpers (for internal use)
     # ------------------------------------------------------------------
 
     def to_dict(self) -> Dict[str, Any]:
@@ -132,8 +129,7 @@ class SimulatedTool:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SimulatedTool":
-        """Reconstruct a SimulatedTool from a plain dict (e.g. loaded JSON)."""
-        # Deserialise nested usage_history list
+        """Reconstruct a SimulatedTool from a plain dict."""
         raw_history = data.pop("usage_history", [])
         tool = cls(**data)
         tool.usage_history = [ToolUsageEvent(**e) for e in raw_history]
@@ -149,24 +145,17 @@ class ToolRegistry:
     """
     Central catalogue of tools used throughout a SAP simulation project.
 
-    Provides CRUD-style access, usage tracking, and JSON persistence under
-    ``projects/<project_name>/tools.json``.
-    """
+    Provides CRUD-style access and usage tracking backed by SQLite.
 
-    PROJECTS_ROOT: Path = Path(__file__).parent.parent.parent / "projects"
+    Parameters
+    ----------
+    project_name:
+        Project identifier used as ``project_id`` in all DB calls.
+    """
 
     def __init__(self, project_name: str) -> None:
         self.project_name = project_name
         self._tools: Dict[str, SimulatedTool] = {}
-        self._load_if_exists()
-
-    # ------------------------------------------------------------------
-    # Path helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def _tools_path(self) -> Path:
-        return self.PROJECTS_ROOT / self.project_name / "tools.json"
 
     # ------------------------------------------------------------------
     # Core operations
@@ -174,15 +163,17 @@ class ToolRegistry:
 
     def announce_tool(self, tool: SimulatedTool) -> SimulatedTool:
         """
-        Register a new tool in the catalogue.
+        Register a new tool in the in-memory catalogue.
 
         An agent calls this to declare that a tool exists and will be used
         during the project.  The tool is assigned a unique ID (if not already
         set) and stored with ``status='announced'``.
 
+        .. note::
+            Call :meth:`persist_tool` immediately after to write to the DB.
+
         Args:
-            tool: A :class:`SimulatedTool` instance (id may be pre-set or left
-                  as the default UUID).
+            tool: A :class:`SimulatedTool` instance.
 
         Returns:
             The stored :class:`SimulatedTool` (same object, with id confirmed).
@@ -196,7 +187,6 @@ class ToolRegistry:
                 "Use a new id or call use_tool() to record usage."
             )
 
-        # Ensure status starts at 'announced'
         tool.status = "announced"
         self._tools[tool.id] = tool
 
@@ -208,7 +198,13 @@ class ToolRegistry:
         )
         return tool
 
-    def use_tool(
+    async def persist_tool(self, tool: SimulatedTool) -> None:
+        """Persist *tool* to SQLite via db.save_tool()."""
+        db = get_db()
+        await db.save_tool(self.project_name, tool.to_dict())
+        logger.debug("ToolRegistry: persisted tool '%s' to SQLite", tool.name)
+
+    async def use_tool(
         self,
         tool_id: str,
         agent_id: str,
@@ -218,9 +214,10 @@ class ToolRegistry:
         """
         Record that an agent used a tool during the simulation.
 
-        Increments ``usage_count``, updates ``last_used_day``, appends a
-        :class:`ToolUsageEvent` to the tool's history, and promotes the tool's
-        status from ``'announced'`` to ``'in_use'`` on first recorded usage.
+        Increments ``usage_count`` in-memory and in the DB via
+        :meth:`~backend.db.repository.Database.update_tool_usage`, updates
+        ``last_used_day``, appends a :class:`ToolUsageEvent`, and promotes the
+        tool's status from ``'announced'`` to ``'in_use'`` on first recorded usage.
 
         Args:
             tool_id:  ID of the tool being used.
@@ -232,7 +229,7 @@ class ToolRegistry:
             The updated :class:`SimulatedTool`.
 
         Raises:
-            KeyError:  If *tool_id* is not in the registry.
+            KeyError:   If *tool_id* is not in the in-memory registry.
             ValueError: If the tool has been deprecated.
         """
         tool = self._get_tool_or_raise(tool_id)
@@ -251,6 +248,10 @@ class ToolRegistry:
             tool.status = "in_use"
             logger.info("Tool '%s' transitioned to in_use.", tool.name)
 
+        # Persist the usage increment to the DB
+        db = get_db()
+        await db.update_tool_usage(tool_id)
+
         logger.debug(
             "Tool used: %s by %s on day %s — %s",
             tool.name,
@@ -262,7 +263,7 @@ class ToolRegistry:
 
     def deprecate_tool(self, tool_id: str, reason: str = "") -> SimulatedTool:
         """
-        Mark a tool as deprecated.  No further usage will be allowed.
+        Mark a tool as deprecated in-memory.  No further usage will be allowed.
 
         Args:
             tool_id: ID of the tool to deprecate.
@@ -270,6 +271,9 @@ class ToolRegistry:
 
         Returns:
             The updated :class:`SimulatedTool`.
+
+        .. note::
+            Call :meth:`persist_tool` after this to sync the status to the DB.
         """
         tool = self._get_tool_or_raise(tool_id)
         tool.status = "deprecated"
@@ -283,58 +287,28 @@ class ToolRegistry:
     # ------------------------------------------------------------------
 
     def get_tool(self, tool_id: str) -> Optional[SimulatedTool]:
-        """Return a single tool by id, or None if not found."""
+        """Return a single tool from in-memory cache by id, or None if not found."""
         return self._tools.get(tool_id)
 
-    def get_tools(
+    async def get_tools(
         self,
-        *,
         category: Optional[ToolCategory] = None,
-        sap_module: Optional[str] = None,
-        status: Optional[ToolStatus] = None,
-        announced_by: Optional[str] = None,
-        tag: Optional[str] = None,
-        tcode: Optional[str] = None,
-        table: Optional[str] = None,
-    ) -> List[SimulatedTool]:
+    ) -> List[Dict[str, Any]]:
         """
-        Return tools matching all supplied filter criteria.
-
-        All filters are optional and applied with AND semantics.
+        Query the database for tools belonging to this project.
 
         Args:
-            category:     Filter by :attr:`SimulatedTool.category`.
-            sap_module:   Filter by :attr:`SimulatedTool.sap_module` (case-insensitive).
-            status:       Filter by :attr:`SimulatedTool.status`.
-            announced_by: Filter by the agent who announced the tool.
-            tag:          Filter tools that include this tag.
-            tcode:        Filter tools that include this T-code.
-            table:        Filter tools that include this database table.
+            category: When supplied, only tools in this category are returned.
 
         Returns:
-            A sorted list of :class:`SimulatedTool` instances (by name).
+            A list of tool dicts as returned by
+            :meth:`~backend.db.repository.Database.get_tools`, sorted by name.
         """
-        results = list(self._tools.values())
+        db = get_db()
+        return await db.get_tools(self.project_name, category=category)
 
-        if category is not None:
-            results = [t for t in results if t.category == category]
-        if sap_module is not None:
-            results = [t for t in results if t.sap_module.upper() == sap_module.upper()]
-        if status is not None:
-            results = [t for t in results if t.status == status]
-        if announced_by is not None:
-            results = [t for t in results if t.announced_by == announced_by]
-        if tag is not None:
-            results = [t for t in results if tag in t.tags]
-        if tcode is not None:
-            results = [t for t in results if tcode in t.tcodes]
-        if table is not None:
-            results = [t for t in results if table in t.tables]
-
-        return sorted(results, key=lambda t: t.name.lower())
-
-    def get_all_tools(self) -> List[SimulatedTool]:
-        """Return all tools sorted by name."""
+    def get_all_tools_local(self) -> List[SimulatedTool]:
+        """Return all in-memory tools sorted by name."""
         return sorted(self._tools.values(), key=lambda t: t.name.lower())
 
     # ------------------------------------------------------------------
@@ -343,7 +317,7 @@ class ToolRegistry:
 
     def get_usage_stats(self) -> Dict[str, Any]:
         """
-        Compute and return a summary of tool usage across the registry.
+        Compute and return a summary of tool usage from the in-memory registry.
 
         Returns a dict with the following keys:
 
@@ -358,33 +332,27 @@ class ToolRegistry:
         """
         all_tools = list(self._tools.values())
 
-        # Counts by status
         by_status: Dict[str, int] = {}
         for t in all_tools:
             by_status[t.status] = by_status.get(t.status, 0) + 1
 
-        # Counts by category
         by_category: Dict[str, int] = {}
         for t in all_tools:
             by_category[t.category] = by_category.get(t.category, 0) + 1
 
-        # Counts by SAP module
         by_module: Dict[str, int] = {}
         for t in all_tools:
             mod = t.sap_module.upper()
             by_module[mod] = by_module.get(mod, 0) + 1
 
-        # Total usages
         total_usages = sum(t.usage_count for t in all_tools)
 
-        # Most-used tools
         most_used = sorted(all_tools, key=lambda t: t.usage_count, reverse=True)[:5]
         most_used_list = [
             {"id": t.id, "name": t.name, "usage_count": t.usage_count}
             for t in most_used
         ]
 
-        # Most-active agents
         agent_counts: Dict[str, int] = {}
         for t in all_tools:
             for ev in t.usage_history:
@@ -394,7 +362,6 @@ class ToolRegistry:
             {"agent_id": aid, "event_count": cnt} for aid, cnt in most_active
         ]
 
-        # Never-used tools
         never_used = [t.id for t in all_tools if t.usage_count == 0]
 
         return {
@@ -421,64 +388,8 @@ class ToolRegistry:
         )
 
     # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
-
-    def save(self) -> None:
-        """
-        Serialise the registry to ``projects/<project_name>/tools.json``.
-
-        Creates the project directory if it does not exist.
-        """
-        self._tools_path.parent.mkdir(parents=True, exist_ok=True)
-
-        payload = {
-            "project": self.project_name,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-            "tools": [t.to_dict() for t in self._tools.values()],
-        }
-
-        with self._tools_path.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=False)
-
-        logger.info(
-            "ToolRegistry saved: %d tools → %s",
-            len(self._tools),
-            self._tools_path,
-        )
-
-    def load(self) -> None:
-        """
-        Load / reload the registry from ``projects/<project_name>/tools.json``.
-
-        Replaces the current in-memory state.  Silently returns if the file
-        does not exist (fresh project).
-        """
-        if not self._tools_path.exists():
-            logger.debug("No tools.json found for project '%s'.", self.project_name)
-            return
-
-        with self._tools_path.open("r", encoding="utf-8") as fh:
-            payload = json.load(fh)
-
-        self._tools = {}
-        for raw in payload.get("tools", []):
-            tool = SimulatedTool.from_dict(raw)
-            self._tools[tool.id] = tool
-
-        logger.info(
-            "ToolRegistry loaded: %d tools from %s",
-            len(self._tools),
-            self._tools_path,
-        )
-
-    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    def _load_if_exists(self) -> None:
-        """Called at construction time to hydrate from disk if available."""
-        self.load()
 
     def _get_tool_or_raise(self, tool_id: str) -> SimulatedTool:
         """Return the tool or raise a descriptive KeyError."""

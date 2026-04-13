@@ -1,10 +1,13 @@
 """
 SAP SIM — Lessons Learned
-Phase: 4.4
+Phase: 7.5
 
 Captures lessons learned throughout the SAP implementation simulation.
 Supports categorisation by phase, impact, and custom filters so project
 teams can retrieve actionable insights at any point in the project lifecycle.
+
+Persistence: SQLite via utils.persistence.get_db()
+    (db.save_lesson / db.get_lessons)
 
 Example:
     from artifacts.lessons_learned import Lesson, LessonsCollector
@@ -21,16 +24,16 @@ Example:
         impact="HIGH",
         recommendation="Always run a full dress-rehearsal migration at least two weeks before go-live.",
     )
-    collector.add_lesson(lesson)
-    print(collector.get_by_phase("Realise"))
+    await collector.add_lesson(lesson)
+    print(await collector.get_by_phase("Realise"))
 """
 
 from __future__ import annotations
 
-import json
-import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Optional
+
+from utils.persistence import get_db
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +74,12 @@ class LessonsCollector:
     """
     Collects and queries lessons learned for a SAP simulation project.
 
-    Persists to ``projects/<name>/lessons.json``.
+    Persists to SQLite via :func:`utils.persistence.get_db`.
+
+    Parameters
+    ----------
+    project_name:
+        Project identifier used as ``project_id`` in all DB calls.
     """
 
     def __init__(self, project_name: str):
@@ -82,16 +90,28 @@ class LessonsCollector:
     # CRUD
     # -----------------------------------------------------------------------
 
-    def add_lesson(self, lesson: Lesson) -> None:
-        """Add a new lesson. Raises ValueError if the ID already exists."""
+    async def add_lesson(self, lesson: Lesson) -> None:
+        """
+        Add a new lesson to in-memory store and persist to SQLite via db.save_lesson().
+
+        Raises ValueError if the ID already exists in memory.
+        """
         if lesson.id in self._lessons:
             raise ValueError(f"Lesson '{lesson.id}' already exists.")
         self._lessons[lesson.id] = lesson
 
+        db = get_db()
+        await db.save_lesson(self.project_name, lesson.to_dict())
+
     def update_lesson(self, lesson_id: str, **updates) -> Lesson:
         """
-        Update fields of an existing lesson.  Supported keyword arguments
-        match the Lesson dataclass field names.  Returns the updated Lesson.
+        Update fields of an existing in-memory lesson.
+
+        Supported keyword arguments match the Lesson dataclass field names.
+        Returns the updated Lesson.
+
+        .. note::
+            Call :meth:`save_lesson_to_db` after this to persist changes to SQLite.
         """
         if lesson_id not in self._lessons:
             raise KeyError(f"Lesson '{lesson_id}' not found.")
@@ -102,69 +122,70 @@ class LessonsCollector:
             setattr(lesson, key, value)
         return lesson
 
+    async def save_lesson_to_db(self, lesson_id: str) -> None:
+        """Re-persist an in-memory lesson (e.g. after :meth:`update_lesson`) to SQLite."""
+        if lesson_id not in self._lessons:
+            raise KeyError(f"Lesson '{lesson_id}' not found.")
+        db = get_db()
+        await db.save_lesson(self.project_name, self._lessons[lesson_id].to_dict())
+
     def get_lesson(self, lesson_id: str) -> Lesson:
-        """Return a single lesson by ID."""
+        """Return a single lesson by ID from in-memory store."""
         if lesson_id not in self._lessons:
             raise KeyError(f"Lesson '{lesson_id}' not found.")
         return self._lessons[lesson_id]
 
     def all_lessons(self) -> list[Lesson]:
-        """Return all lessons sorted by simulation day then ID."""
+        """Return all in-memory lessons sorted by simulation day then ID."""
         return sorted(
             self._lessons.values(), key=lambda l: (l.reported_at_day, l.id)
         )
 
     # -----------------------------------------------------------------------
-    # Filtering / querying
+    # Filtering / querying (DB-backed)
     # -----------------------------------------------------------------------
 
-    def get_lessons(
+    async def get_lessons(
         self,
         *,
-        category: Optional[str] = None,
         phase: Optional[str] = None,
-        reported_by: Optional[str] = None,
-        impact: Optional[str] = None,
-    ) -> list[Lesson]:
+    ) -> list[dict]:
         """
-        Return lessons matching ALL supplied filter criteria (AND semantics).
-        Comparisons are case-insensitive.
+        Query the database for lessons belonging to this project.
 
         Parameters
         ----------
-        category:    filter by category string
-        phase:       filter by project phase
-        reported_by: filter by reporter name
-        impact:      filter by impact level (HIGH / MEDIUM / LOW)
+        phase:
+            When supplied, only lessons from this SAP ACTIVATE phase are
+            returned (delegated to :meth:`~backend.db.repository.Database.get_lessons`).
+
+        Returns
+        -------
+        list[dict]
+            Plain dicts as returned by the repository, sorted by
+            ``reported_day`` ASC.
         """
-        results = self.all_lessons()
+        db = get_db()
+        return await db.get_lessons(self.project_name, phase=phase)
 
-        if category is not None:
-            results = [l for l in results if l.category.lower() == category.lower()]
-        if phase is not None:
-            results = [l for l in results if l.phase.lower() == phase.lower()]
-        if reported_by is not None:
-            results = [l for l in results if l.reported_by.lower() == reported_by.lower()]
-        if impact is not None:
-            results = [l for l in results if l.impact.lower() == impact.lower()]
-
-        return results
-
-    def get_by_phase(self, phase: str) -> list[Lesson]:
-        """Shorthand: return all lessons for a given phase (case-insensitive)."""
-        return self.get_lessons(phase=phase)
+    async def get_by_phase(self, phase: str) -> list[dict]:
+        """Shorthand: return all DB lessons for a given phase."""
+        return await self.get_lessons(phase=phase)
 
     def get_by_category(self, category: str) -> list[Lesson]:
-        """Shorthand: return all lessons for a given category (case-insensitive)."""
-        return self.get_lessons(category=category)
+        """Return all in-memory lessons for a given category (case-insensitive)."""
+        return [
+            l for l in self.all_lessons()
+            if l.category.lower() == category.lower()
+        ]
 
     def get_high_impact(self) -> list[Lesson]:
-        """Return lessons marked as HIGH impact."""
-        return self.get_lessons(impact="HIGH")
+        """Return in-memory lessons marked as HIGH impact."""
+        return [l for l in self.all_lessons() if l.impact.upper() == "HIGH"]
 
     def summary(self) -> dict:
         """
-        Returns a dict summarising lessons by phase, category, and impact.
+        Returns a dict summarising in-memory lessons by phase, category, and impact.
 
         Structure::
 
@@ -193,48 +214,6 @@ class LessonsCollector:
             "by_category": dict(sorted(by_category.items())),
             "by_impact": dict(sorted(by_impact.items())),
         }
-
-    # -----------------------------------------------------------------------
-    # Persistence
-    # -----------------------------------------------------------------------
-
-    def _project_dir(self) -> str:
-        base = os.path.join(
-            os.path.dirname(__file__), "..", "..", "projects", self.project_name
-        )
-        return os.path.normpath(base)
-
-    def _file_path(self) -> str:
-        return os.path.join(self._project_dir(), "lessons.json")
-
-    def save(self) -> str:
-        """Persist all lessons to disk.  Returns the file path written."""
-        os.makedirs(self._project_dir(), exist_ok=True)
-        payload = {
-            "project": self.project_name,
-            "lessons": [l.to_dict() for l in self.all_lessons()],
-        }
-        path = self._file_path()
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=False)
-        return path
-
-    @classmethod
-    def load(cls, project_name: str) -> "LessonsCollector":
-        """Load a LessonsCollector from its persisted JSON file."""
-        instance = cls(project_name)
-        base = os.path.join(
-            os.path.dirname(__file__), "..", "..", "projects", project_name
-        )
-        path = os.path.normpath(os.path.join(base, "lessons.json"))
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"No lessons file found at '{path}'.")
-        with open(path, encoding="utf-8") as fh:
-            payload = json.load(fh)
-        for item in payload.get("lessons", []):
-            lesson = Lesson.from_dict(item)
-            instance._lessons[lesson.id] = lesson
-        return instance
 
     # -----------------------------------------------------------------------
     # Dunder helpers
