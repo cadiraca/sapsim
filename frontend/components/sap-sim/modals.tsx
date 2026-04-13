@@ -69,7 +69,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setHealthResult(null)
     // Settings API requires a project name; use the global default or skip gracefully
     api
-      .getSettings('Apex Manufacturing S4HANA Transformation')
+      .getSettings('Cables-Company')
       .then((data: SettingsResponse) => {
         setSettings({
           litellm_base_url: data.litellm_base_url,
@@ -89,7 +89,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setSaving(true)
     setSaveResult(null)
     try {
-      await api.updateSettings('Apex Manufacturing S4HANA Transformation', settings)
+      await api.updateSettings('Cables-Company', settings)
       setSaveResult({ success: true, message: 'Settings saved.' })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Save failed.'
@@ -494,7 +494,7 @@ export function ProjectSetupModal({
                   value={projectName}
                   onChange={(e) => setProjectName(e.target.value)}
                   className="bg-[#27272a] border-[#27272a] text-white"
-                  placeholder="e.g. Apex Manufacturing S/4HANA Transformation"
+                  placeholder="e.g. Cables-Company"
                 />
               </div>
 
@@ -752,7 +752,7 @@ function scoreToPercent(value: number): number {
 export function AgentDetailModal({
   agent,
   onClose,
-  projectName = 'Apex Manufacturing S4HANA Transformation',
+  projectName = 'Cables-Company',
 }: AgentDetailModalProps) {
   const [detail, setDetail] = useState<AgentDetailResponse | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)

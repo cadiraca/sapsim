@@ -124,7 +124,7 @@ export const agents: Agent[] = [
 ]
 
 export const currentProject = {
-  name: 'Apex Manufacturing S/4HANA Transformation',
+  name: 'Cables-Company',
   phase: 'Explore' as Phase,
   day: 23,
   totalDays: 180,
