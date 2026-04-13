@@ -408,8 +408,19 @@ export function ProjectSetupModal({
 
     setSubmitting(true)
     try {
+      // Slugify: replace spaces/special chars with hyphens, collapse runs, trim edges
+      const slug = projectName.trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, '-')
+        .replace(/-{2,}/g, '-')
+        .replace(/^-|-$/g, '')
+      if (!slug) {
+        setError('Project name must contain at least one alphanumeric character.')
+        setStep(1)
+        setSubmitting(false)
+        return
+      }
       const req: CreateProjectRequest = {
-        name: projectName.trim(),
+        name: slug,
         industry,
         scope: scopeDoc.trim() || undefined,
         methodology: methodologyDoc.trim() || methodology,
