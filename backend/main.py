@@ -35,9 +35,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS origins: local dev + Docker/Coolify deployments
+# Add more origins via the CORS_ORIGINS env var (comma-separated)
+import os as _os
+
+_default_origins = [
+    "http://localhost:3000",
+    "http://sapsim.carlab.local",
+    "http://sapsim-api.carlab.local",
+]
+_extra = _os.environ.get("CORS_ORIGINS", "")
+_allow_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

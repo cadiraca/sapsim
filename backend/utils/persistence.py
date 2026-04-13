@@ -48,9 +48,15 @@ async def _ensure_dir(path: Path) -> None:
 # module load time (aiosqlite may not be installed in all environments).
 _db: "Database | None" = None
 
-# Default database path (relative to repo root)
+# Default database path
+# In Docker, /app/data is a volume mount; override via DB_PATH env var.
+# Fallback: repo-relative projects/sapsim.db (for local dev).
+import os as _os
+
 _DEFAULT_DB_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "projects" / "sapsim.db"
+    Path(_os.environ["DB_PATH"])
+    if "DB_PATH" in _os.environ
+    else Path(__file__).resolve().parent.parent.parent / "projects" / "sapsim.db"
 )
 
 

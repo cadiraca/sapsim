@@ -344,6 +344,89 @@ Point `litellm_base_url` at any OpenAI-compatible gateway (LiteLLM Proxy, OpenAI
 
 ---
 
+## Docker Deployment
+
+### Prerequisites
+
+- Docker + Docker Compose v2
+- A LiteLLM-compatible gateway (SAP AI Core, OpenAI, local LiteLLM proxy, etc.)
+- For carlab/Coolify: Traefik running on the `coolify` external Docker network
+
+### Quick Start (docker compose)
+
+```bash
+# 1. Clone the repo
+git clone <repo-url> sapsim
+cd sapsim
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env — set LLM_BASE_URL and LLM_API_KEY at minimum
+
+# 3. Build and start both services
+docker compose up -d --build
+
+# 4. Verify they're running
+docker compose ps
+docker compose logs -f
+```
+
+Once up:
+- **Frontend (Mission Controller):** http://sapsim.carlab.local
+- **Backend API:** http://sapsim-api.carlab.local
+- **API Docs:** http://sapsim-api.carlab.local/docs
+
+SQLite data is persisted in `./data/sapsim.db` on the host (created automatically).
+
+### Environment Variables
+
+See `.env.example` for the full list. Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_BASE_URL` | `http://localhost:4000` | LiteLLM-compatible gateway URL |
+| `LLM_API_KEY` | `changeme` | API key for the LLM gateway |
+| `NEXT_PUBLIC_API_URL` | `http://sapsim-api.carlab.local/api` | Backend URL (baked into frontend at build time) |
+| `DB_PATH` | `/app/data/sapsim.db` | SQLite database path inside backend container |
+| `CORS_ORIGINS` | _(empty)_ | Extra allowed CORS origins (comma-separated) |
+| `LOG_LEVEL` | `info` | Python log level for the backend |
+
+> ⚠️ `NEXT_PUBLIC_API_URL` is a Next.js build-time variable. If you change it, rebuild the frontend image (`docker compose build frontend`).
+
+### Deploying on Coolify
+
+1. **Add resource:** In Coolify, go to your server → Resources → **New Resource** → **Docker Compose**.
+
+2. **Source:** Paste or link this repository. Coolify will detect `docker-compose.yml` at the repo root.
+
+3. **Set environment variables** in the Coolify UI (Environment tab):
+   ```
+   LLM_BASE_URL=https://your-litellm-gateway.example.com
+   LLM_API_KEY=your-api-key
+   NEXT_PUBLIC_API_URL=http://sapsim-api.carlab.local/api
+   DB_PATH=/app/data/sapsim.db
+   ```
+
+4. **Persistent storage:** Map a Coolify volume (or the `./data` bind mount) to `/app/data` on the backend service so SQLite survives redeployments.
+
+5. **Deploy:** Click **Deploy**. Coolify will build both images, start the containers on the `coolify` Traefik network, and expose:
+   - `sapsim.carlab.local` → frontend
+   - `sapsim-api.carlab.local` → backend
+
+6. **Manual deploy pattern** (proven reliable on carlab):
+   ```bash
+   # Build
+   docker compose build
+
+   # Stop old containers if running
+   docker compose down
+
+   # Start fresh
+   docker compose up -d
+   ```
+
+---
+
 ## Development
 
 ```bash

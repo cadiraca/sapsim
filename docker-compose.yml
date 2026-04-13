@@ -1,0 +1,91 @@
+---
+# SAP SIM — Docker Compose
+# Phase 7.8 — Production deployment via Coolify / Traefik
+#
+# Usage:
+#   docker compose up -d --build
+#
+# For Coolify deployment, add this repo as a Docker Compose resource and set
+# environment variables in the Coolify UI (see .env.example for the full list).
+#
+# Domains (served via Traefik on carlab):
+#   http://sapsim.carlab.local       → frontend (Next.js)
+#   http://sapsim-api.carlab.local   → backend  (FastAPI)
+#
+# The SQLite database is persisted in the ./data volume mount on the host.
+
+services:
+
+  # ── Backend — FastAPI + uvicorn ──────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sapsim-backend
+    restart: unless-stopped
+    networks:
+      - sapsim-net
+      - coolify
+    volumes:
+      - ./data:/app/data          # SQLite DB + runtime data
+    environment:
+      # Database path inside the container (volume-mounted)
+      DB_PATH: /app/data/sapsim.db
+      # LiteLLM / OpenAI-compatible gateway
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://localhost:4000}
+      LLM_API_KEY: ${LLM_API_KEY:-changeme}
+      # Extra CORS origins (comma-separated) — add your public domain if needed
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Python log level
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      # Traefik discovery
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      # Router
+      - "traefik.http.routers.sapsim-api.entryPoints=http"
+      - "traefik.http.routers.sapsim-api.rule=Host(`sapsim-api.carlab.local`)"
+      # Service
+      - "traefik.http.services.sapsim-api.loadbalancer.server.port=8000"
+
+  # ── Frontend — Next.js ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # This URL is baked into the Next.js bundle at build time.
+        # The browser (not the container) needs to reach this address.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://sapsim-api.carlab.local/api}
+    container_name: sapsim-frontend
+    restart: unless-stopped
+    networks:
+      - sapsim-net
+      - coolify
+    environment:
+      NODE_ENV: production
+    depends_on:
+      backend:
+        condition: service_healthy
+    labels:
+      # Traefik discovery
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      # Router
+      - "traefik.http.routers.sapsim.entryPoints=http"
+      - "traefik.http.routers.sapsim.rule=Host(`sapsim.carlab.local`)"
+      # Service
+      - "traefik.http.services.sapsim.loadbalancer.server.port=3000"
+
+networks:
+  sapsim-net:
+    driver: bridge
+  coolify:
+    external: true
