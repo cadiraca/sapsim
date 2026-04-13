@@ -193,12 +193,17 @@ sapsim/
 │   │   ├── meeting_scheduler.py# Phase-appropriate meeting generation
 │   │   └── state_machine.py    # Project state: IDLE/RUNNING/PAUSED/STOPPED
 │   │
+│   ├── db/
+│   │   ├── schema.py           # SQLite schema bootstrap (init_db, TABLE_DEFINITIONS)
+│   │   ├── repository.py       # Database class — async CRUD for all tables
+│   │   └── migrate.py          # Migration helpers (JSON → SQLite)
+│   │
 │   ├── utils/
 │   │   ├── litellm_client.py   # LiteLLM gateway wrapper
-│   │   └── persistence.py      # Agent state + memory save/load
+│   │   └── persistence.py      # High-level async persistence API (SQLite-backed)
 │   │
 │   ├── artifacts/              # Generated project deliverables (per-project)
-│   ├── tests/                  # Backend test suite
+│   ├── tests/                  # Backend test suite (pytest + pytest-asyncio)
 │   └── venv/                   # Python virtual environment (not committed)
 │
 ├── frontend/
@@ -236,8 +241,91 @@ sapsim/
 | Async runtime | Python asyncio + uvicorn |
 | LLM routing | LiteLLM (multi-model gateway) |
 | Data validation | Pydantic v2 |
-| State persistence | JSON files (per-project directory) |
+| State persistence | SQLite (WAL mode, per-project or shared DB) |
 | Package manager (FE) | pnpm |
+
+---
+
+## Persistence
+
+As of Phase 7, SAP SIM uses **SQLite** as its primary persistence backend, replacing the previous JSON-file approach.
+
+### Backend
+
+- **Engine:** SQLite via [`aiosqlite`](https://github.com/omnilib/aiosqlite) (fully async, no thread blocking)
+- **Journal mode:** WAL (Write-Ahead Logging) — enabled on every connection for safe concurrent reads during a live simulation
+- **Schema:** 9 tables + 11 indexes covering projects, agents, feed events, meetings, decisions, tools, test cases, lessons learned, and agent memory summaries
+- **JSON columns:** Structured/variable fields (config, state, participants, transcript, votes, etc.) are stored as `TEXT` JSON for flexibility and forward-compatibility
+- **Foreign keys:** Declared with `ON DELETE CASCADE`; enforced per-connection via `PRAGMA foreign_keys = ON`
+
+### Database location
+
+By default the database lives at:
+
+```
+<repo-root>/projects/sapsim.db
+```
+
+You can override this by passing a custom path to `init_persistence()`:
+
+```python
+from utils.persistence import init_persistence
+await init_persistence("/data/mysim/project.db")
+```
+
+Per-project isolation is also supported — instantiate `Database` directly:
+
+```python
+from db.repository import Database
+db = Database("projects/my_project/sapsim.db")
+await db.connect()
+```
+
+### Schema bootstrap
+
+All tables and indexes are created with `IF NOT EXISTS` — safe to call on every startup. The `Database.connect()` method handles this automatically:
+
+```python
+db = Database("projects/sapsim.db")
+await db.connect()   # creates schema if needed, idempotent
+```
+
+### High-level API
+
+The `utils.persistence` module provides a thin, stateful wrapper over the `Database` class with a stable interface unchanged from the Phase 1.5 JSON implementation:
+
+```python
+from utils.persistence import (
+    init_persistence,    # open / create the database
+    close_persistence,   # clean shutdown
+    save_project_state,  # persist full project state dict
+    load_project_state,  # restore project state → dict | None
+    append_feed_event,   # append event to the simulation feed log
+    save_agent_state,    # persist a single agent snapshot
+    load_agent_state,    # restore agent state → dict | None
+    save_memory_summary, # write compressed LLM memory for an agent
+    load_memory_summary, # read memory summary → str | None
+    get_db,              # get the raw Database instance for advanced ops
+)
+```
+
+### Migration from JSON
+
+The JSON-based persistence (Phase 1–6) used flat files under `projects/<name>/`:
+
+| Old file | New location |
+|---|---|
+| `projects/<name>/state.json` | `projects` table (`config` column) |
+| `projects/<name>/agents/<codename>.json` | `agents` table (`state` column) |
+| `projects/<name>/feed/events.jsonl` | `feed_events` table |
+| `artifacts/meetings.json` | `meetings` table |
+| `artifacts/decisions.json` | `decisions` table |
+| `artifacts/tools.json` | `tools` table |
+| `artifacts/test_strategy.json` | `test_cases` table |
+| `artifacts/lessons.json` | `lessons` table |
+| `memory/<codename>_summary.md` | `memory_summaries` table |
+
+All public function signatures in `utils/persistence.py` are **unchanged** — callers require no migration. The `Database` class in `db/repository.py` provides a richer direct API for advanced queries.
 
 ---
 

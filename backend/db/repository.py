@@ -34,7 +34,7 @@ from typing import Any
 
 import aiosqlite
 
-from db.schema import init_db
+from db.schema import TABLE_DEFINITIONS, INDEX_DEFINITIONS
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +98,21 @@ class Database:
         await self._db.execute("PRAGMA foreign_keys = ON")
         await self._db.execute("PRAGMA journal_mode = WAL")
 
-        # Bootstrap tables / indexes (idempotent).
-        await init_db(self._db_path)
+        # Bootstrap tables / indexes (idempotent) using the already-open
+        # connection — avoids opening a second connection that would conflict
+        # with the WAL lock on this file.
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        for stmt in TABLE_DEFINITIONS:
+            await self._db.execute(stmt)
+        for stmt in INDEX_DEFINITIONS:
+            await self._db.execute(stmt)
+        await self._db.commit()
 
-        logger.info("Database ready.")
+        logger.info(
+            "Database ready: %d table(s), %d index(es) verified.",
+            len(TABLE_DEFINITIONS),
+            len(INDEX_DEFINITIONS),
+        )
 
     async def close(self) -> None:
         """Close the database connection."""
