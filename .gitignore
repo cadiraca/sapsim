@@ -44,6 +44,11 @@ pnpm-debug.log*
 projects/*/state.json
 projects/*/artifacts/
 
+# SQLite databases (runtime data, not committed)
+*.db
+*.db-shm
+*.db-wal
+
 # Test output
 .pytest_cache/
 coverage/
