@@ -34,7 +34,7 @@ from typing import Any
 
 import aiosqlite
 
-from backend.db.schema import init_db
+from db.schema import init_db
 
 logger = logging.getLogger(__name__)
 
