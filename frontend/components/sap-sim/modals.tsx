@@ -13,6 +13,14 @@ import {
   AlertCircle,
   Loader2,
 } from 'lucide-react'
+import {
+  Radar,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  ResponsiveContainer,
+} from 'recharts'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -816,46 +824,54 @@ export function AgentDetailModal({
             )}
           </div>
 
-          {/* ── Personality Radar (customer agents) ── */}
-          {resolved.personality && (
-            <div className="p-3 bg-[#27272a]/50 border border-[#27272a] rounded-lg">
-              <div className="text-sm font-medium text-[#f59e0b] mb-3">
-                {resolved.personality.archetype}
-              </div>
-              <div className="space-y-2">
-                {[
-                  {
-                    label: 'Engagement',
-                    val: scoreToPercent(resolved.personality.engagement),
-                    color: 'bg-[#3b82f6]',
-                  },
-                  {
-                    label: 'Trust',
-                    val: scoreToPercent(resolved.personality.trust),
-                    color: 'bg-[#22c55e]',
-                  },
-                  {
-                    label: 'Risk Tolerance',
-                    val: scoreToPercent(resolved.personality.risk_tolerance),
-                    color: 'bg-[#f59e0b]',
-                  },
-                ].map(({ label, val, color }) => (
-                  <div key={label}>
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="text-[#71717a]">{label}</span>
-                      <span className="text-white">{val}%</span>
-                    </div>
-                    <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-                      <div
-                        className={cn('h-full rounded-full', color)}
-                        style={{ width: `${val}%` }}
+          {/* ── Personality Radar Chart (customer agents) ── */}
+          {resolved.personality && (() => {
+            const radarData = [
+              { trait: 'Engagement', value: scoreToPercent(resolved.personality!.engagement) },
+              { trait: 'Trust', value: scoreToPercent(resolved.personality!.trust) },
+              { trait: 'Risk Tolerance', value: scoreToPercent(resolved.personality!.risk_tolerance) },
+            ]
+            return (
+              <div className="p-3 bg-[#27272a]/50 border border-[#27272a] rounded-lg">
+                <div className="text-sm font-medium text-[#f59e0b] mb-1">
+                  {resolved.personality!.archetype}
+                </div>
+                <div className="h-48 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RadarChart cx="50%" cy="50%" outerRadius="70%" data={radarData}>
+                      <PolarGrid stroke="#27272a" />
+                      <PolarAngleAxis
+                        dataKey="trait"
+                        tick={{ fill: '#a1a1aa', fontSize: 10 }}
                       />
+                      <PolarRadiusAxis
+                        angle={90}
+                        domain={[0, 100]}
+                        tick={{ fill: '#52525b', fontSize: 8 }}
+                        tickCount={5}
+                      />
+                      <Radar
+                        name="Personality"
+                        dataKey="value"
+                        stroke="#f59e0b"
+                        fill="#f59e0b"
+                        fillOpacity={0.25}
+                      />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                </div>
+                {/* Numeric summary below chart */}
+                <div className="grid grid-cols-3 gap-2 mt-1">
+                  {radarData.map(({ trait, value }) => (
+                    <div key={trait} className="text-center">
+                      <div className="text-xs text-white font-medium">{value}%</div>
+                      <div className="text-[9px] text-[#71717a]">{trait}</div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
 
           {/* ── Current Status ── */}
           <div>
