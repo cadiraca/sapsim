@@ -32,7 +32,7 @@ import { cn } from '@/lib/utils'
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROJECT_NAME = 'Apex Manufacturing S4HANA Transformation'
+const PROJECT_NAME = 'Cables-Company'
 
 type TabType = 'meetings' | 'decisions' | 'tools' | 'test-strategy' | 'lessons'
 

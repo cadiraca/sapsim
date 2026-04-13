@@ -20,7 +20,7 @@ import type { FeedEvent, FeedEventType } from '@/lib/types'
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROJECT_NAME = 'Apex Manufacturing S4HANA Transformation'
+const PROJECT_NAME = 'Cables-Company'
 
 // Canonical event types the feed emits
 type EventCategory =

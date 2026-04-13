@@ -1,0 +1,60 @@
+{
+  "project_name": "admin-test",
+  "status": "RUNNING",
+  "current_phase": "discover",
+  "simulated_day": 0,
+  "total_days": 165,
+  "phase_progress": [
+    {
+      "phase_id": "discover",
+      "phase_name": "Discover",
+      "percentage": 0.0,
+      "is_current": true,
+      "is_completed": false
+    },
+    {
+      "phase_id": "prepare",
+      "phase_name": "Prepare",
+      "percentage": 0.0,
+      "is_current": false,
+      "is_completed": false
+    },
+    {
+      "phase_id": "explore",
+      "phase_name": "Explore",
+      "percentage": 0.0,
+      "is_current": false,
+      "is_completed": false
+    },
+    {
+      "phase_id": "realize",
+      "phase_name": "Realize",
+      "percentage": 0.0,
+      "is_current": false,
+      "is_completed": false
+    },
+    {
+      "phase_id": "deploy",
+      "phase_name": "Deploy",
+      "percentage": 0.0,
+      "is_current": false,
+      "is_completed": false
+    },
+    {
+      "phase_id": "run",
+      "phase_name": "Run",
+      "percentage": 0.0,
+      "is_current": false,
+      "is_completed": false
+    }
+  ],
+  "active_agents": [],
+  "pending_decisions": [],
+  "active_meetings": [],
+  "milestones": [],
+  "industry": "Retail",
+  "scope": "",
+  "methodology": "SAP Activate",
+  "created_at": "2026-04-11T04:03:47.294064+00:00",
+  "last_updated": "2026-04-11T04:03:47.299164+00:00"
+}

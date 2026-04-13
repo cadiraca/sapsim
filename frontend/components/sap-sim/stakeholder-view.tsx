@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROJECT_NAME = 'Apex Manufacturing S4HANA Transformation'
+const PROJECT_NAME = 'Cables-Company'
 
 // ---------------------------------------------------------------------------
 // Gauge Ring

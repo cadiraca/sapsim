@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils'
 
 // Single source of truth for project name — swap once a project context/store
 // exists in a later phase.
-const PROJECT_NAME = 'Apex Manufacturing S4HANA Transformation'
+const PROJECT_NAME = 'Cables-Company'
 
 // ---------------------------------------------------------------------------
 // Helpers

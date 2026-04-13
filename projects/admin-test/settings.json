@@ -1,0 +1,9 @@
+{
+  "litellm_base_url": "http://localhost:4000",
+  "litellm_api_key": "",
+  "litellm_model": "claude-4-6-sonnet",
+  "max_parallel_agents": 10,
+  "memory_compression_interval": "every_10_turns",
+  "webhook_url": null,
+  "max_token_budget": 500000
+}

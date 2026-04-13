@@ -8,7 +8,7 @@ import type { SimulationStatusResponse } from '@/lib/types'
 
 // Project name — kept in a single place; swap out once we have a project
 // context/store in a later phase.
-const PROJECT_NAME = 'Apex Manufacturing S4HANA Transformation'
+const PROJECT_NAME = 'Cables-Company'
 
 interface TopBarProps {
   onNewProject: () => void
