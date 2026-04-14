@@ -8,6 +8,9 @@ Purpose: App factory with CORS, main routes, and admin router.
 Dependencies: fastapi, uvicorn, api.routes, api.admin, utils.persistence
 """
 
+import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -16,6 +19,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.admin import router as admin_router
 from api.routes import router
 from utils.persistence import close_persistence, init_persistence
+
+# ---------------------------------------------------------------------------
+# Logging — make sure simulation modules actually emit output
+# ---------------------------------------------------------------------------
+_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.INFO),
+    format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+    stream=sys.stdout,
+)
+# Quiet down noisy libraries
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -37,14 +54,12 @@ app = FastAPI(
 
 # CORS origins: local dev + Docker/Coolify deployments
 # Add more origins via the CORS_ORIGINS env var (comma-separated)
-import os as _os
-
 _default_origins = [
     "http://localhost:3000",
     "http://sapsim.carlab.local",
     "http://sapsim-api.carlab.local",
 ]
-_extra = _os.environ.get("CORS_ORIGINS", "")
+_extra = os.environ.get("CORS_ORIGINS", "")
 _allow_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
 
 app.add_middleware(
