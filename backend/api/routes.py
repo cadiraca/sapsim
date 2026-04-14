@@ -1564,7 +1564,7 @@ async def get_stakeholder_view(project_name: str) -> StakeholderView:
     else:
         health = 70.0
 
-    phase_progress = [PhaseProgress(**p) for p in state.get("phase_progress", [])]
+    phase_progress = _parse_phase_progress(state)
 
     # Top decisions (first 5 pending)
     top_decisions = state.get("pending_decisions", [])[:5]
