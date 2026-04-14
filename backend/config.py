@@ -9,6 +9,7 @@ Dependencies: pydantic, python-dotenv, pathlib
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -24,15 +25,15 @@ class ProjectSettings(BaseModel):
 
     # LiteLLM gateway
     litellm_base_url: str = Field(
-        default="http://localhost:4000",
+        default_factory=lambda: os.environ.get("LLM_BASE_URL", "http://localhost:4000"),
         description="Base URL for the LiteLLM-compatible gateway (no trailing slash)",
     )
     litellm_api_key: str = Field(
-        default="",
+        default_factory=lambda: os.environ.get("LLM_API_KEY", ""),
         description="API key for the LiteLLM gateway",
     )
     litellm_model: str = Field(
-        default="claude-4-6-sonnet",
+        default_factory=lambda: os.environ.get("LLM_MODEL", "claude-4-6-sonnet"),
         description="Default model for agents that don't have a tier override",
     )
 
