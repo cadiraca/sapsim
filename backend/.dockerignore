@@ -17,5 +17,4 @@ build/
 *.db-shm
 *.db-wal
 projects/
-artifacts/
 tests/
