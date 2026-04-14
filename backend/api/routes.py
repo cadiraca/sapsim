@@ -250,6 +250,33 @@ async def _require_status(
     return state
 
 
+def _parse_phase_progress(state: dict[str, Any]) -> list[PhaseProgress]:
+    """Convert phase_progress from state (dict or list) into PhaseProgress models."""
+    raw = state.get("phase_progress", {})
+    current_phase = state.get("current_phase", "")
+
+    # Format A: dict like {"discover": 7.14, "prepare": 0.0, ...}
+    if isinstance(raw, dict):
+        phases = ["discover", "prepare", "explore", "realize", "deploy", "run"]
+        result = []
+        for phase in phases:
+            pct = raw.get(phase, 0.0)
+            result.append(PhaseProgress(
+                phase_id=phase,
+                phase_name=phase.capitalize(),
+                percentage=pct,
+                is_current=(phase == current_phase),
+                is_completed=(pct >= 100.0),
+            ))
+        return result
+
+    # Format B: list of PhaseProgress-like dicts
+    if isinstance(raw, list):
+        return [PhaseProgress(**p) if isinstance(p, dict) else p for p in raw]
+
+    return []
+
+
 def _state_to_model(state: dict[str, Any]) -> ProjectResponse:
     return ProjectResponse(
         project_name=state["project_name"],
@@ -257,7 +284,7 @@ def _state_to_model(state: dict[str, Any]) -> ProjectResponse:
         current_phase=state["current_phase"],
         simulated_day=state["simulated_day"],
         total_days=state["total_days"],
-        phase_progress=[PhaseProgress(**p) for p in state.get("phase_progress", [])],
+        phase_progress=_parse_phase_progress(state),
         active_agents=state.get("active_agents", []),
         pending_decisions=state.get("pending_decisions", []),
         active_meetings=state.get("active_meetings", []),
