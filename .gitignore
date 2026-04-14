@@ -41,6 +41,7 @@ pnpm-debug.log*
 .idea/
 
 # SAP SIM runtime data (per-project state, not committed)
+projects/*/
 projects/*/state.json
 projects/*/artifacts/
 
