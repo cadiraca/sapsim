@@ -201,13 +201,12 @@ class FinalReportGenerator:
         # (meeting files are individual Markdown exports, not a single store).
         # The simulation engine is expected to pass an in-memory instance.
         if self._meeting_logger is None:
-            self._meeting_logger = MeetingLogger()
+            self._meeting_logger = MeetingLogger(self.project_name)
 
         # DecisionBoard
         if self._decision_board is None:
             self._decision_board = DecisionBoard(
                 project_name=self.project_name,
-                projects_root=self.projects_root,
             )
 
         # ToolRegistry

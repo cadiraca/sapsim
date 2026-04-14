@@ -10,16 +10,9 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { api } from '@/lib/api'
+import { useProject } from '@/lib/project-context'
 import type { Agent, SimulationStatus } from '@/lib/types'
 import { cn } from '@/lib/utils'
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-// Single source of truth for project name — swap once a project context/store
-// exists in a later phase.
-const PROJECT_NAME = 'Cables-Company'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -176,9 +169,10 @@ export function LeftSidebar({
   onSettingsClick,
   onAgentClick,
 }: LeftSidebarProps) {
+  const { activeProject } = useProject()
   const [agents, setAgents] = useState<Agent[]>([])
   const [projectPhase, setProjectPhase] = useState<string>('—')
-  const [projectName, setProjectName] = useState<string>(PROJECT_NAME)
+  const [projectName, setProjectName] = useState<string>('')
   const [activeMeetings, setActiveMeetings] = useState<
     { id: string; title: string; time: string }[]
   >([])
@@ -189,11 +183,13 @@ export function LeftSidebar({
   useEffect(() => {
     let cancelled = false
 
+    if (!activeProject) return
+
     const fetchData = async () => {
       try {
         const [agentList, statusData] = await Promise.all([
-          api.getAgents(PROJECT_NAME),
-          api.getStatus(PROJECT_NAME),
+          api.getAgents(activeProject),
+          api.getStatus(activeProject),
         ])
 
         if (!cancelled) {
@@ -223,7 +219,7 @@ export function LeftSidebar({
       cancelled = true
       clearInterval(interval)
     }
-  }, [])
+  }, [activeProject])
 
   // ---------------------------------------------------------------------------
   // Phase badge colour

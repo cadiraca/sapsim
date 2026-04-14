@@ -182,6 +182,24 @@ async def load_project_state(project_name: str) -> dict[str, Any] | None:
     return row
 
 
+async def delete_project_state(project_name: str) -> None:
+    """Delete a project and all its associated data from the database.
+
+    Args:
+        project_name: The unique project identifier to remove.
+    """
+    db = _require_db()
+    await db.delete_project(project_name)
+    logger.debug("Deleted project state for '%s'", project_name)
+
+
+async def list_project_names() -> list[str]:
+    """Return a sorted list of all project names stored in the database."""
+    db = _require_db()
+    rows = await db.list_projects()
+    return sorted(row["name"] for row in rows)
+
+
 # ---------------------------------------------------------------------------
 # Feed events  (append-only)
 # ---------------------------------------------------------------------------
@@ -198,6 +216,30 @@ async def append_feed_event(project_name: str, event_dict: dict[str, Any]) -> No
     """
     db = _require_db()
     await db.append_event(project_name, event_dict)
+
+
+async def get_feed_events(
+    project_name: str,
+    limit: int = 100,
+    offset: int = 0,
+    event_type: str | None = None,
+) -> list[dict]:
+    """Return feed events from the database for *project_name*.
+
+    Args:
+        project_name: The unique project identifier.
+        limit:        Max events to return.
+        offset:       Skip this many events (pagination).
+        event_type:   Optional filter by event type string.
+    """
+    db = _require_db()
+    return await db.get_events(project_name, limit=limit, offset=offset, event_type=event_type)
+
+
+async def count_feed_events(project_name: str) -> int:
+    """Return total number of feed events stored for *project_name*."""
+    db = _require_db()
+    return await db.count_events(project_name)
 
 
 # ---------------------------------------------------------------------------
@@ -269,3 +311,27 @@ async def load_memory_summary(project_name: str, codename: str) -> str | None:
     """
     db = _require_db()
     return await db.load_memory(project_name, codename)
+
+
+async def save_decision(project_name: str, decision_dict: dict) -> None:
+    """Save a decision to the database.
+
+    Args:
+        project_name:   Project identifier.
+        decision_dict:  Decision data dict (must contain 'id').
+    """
+    db = _require_db()
+    await db.save_decision(project_name, decision_dict)
+
+
+async def get_decisions(
+    project_name: str, status: str | None = None
+) -> list[dict]:
+    """Return all decisions for a project from the database.
+
+    Args:
+        project_name: Project identifier.
+        status:       Optional filter by decision status.
+    """
+    db = _require_db()
+    return await db.get_decisions(project_name, status=status)

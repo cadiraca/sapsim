@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { api } from '@/lib/api'
+import { useProject } from '@/lib/project-context'
 import type {
   Agent,
   AgentDetailResponse,
@@ -44,6 +45,7 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
+  const { activeProject } = useProject()
   const [showApiKey, setShowApiKey] = useState(false)
   const [settings, setSettings] = useState<SettingsUpdateRequest>({
     litellm_base_url: 'http://localhost:4000',
@@ -67,9 +69,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setTestResult(null)
     setSaveResult(null)
     setHealthResult(null)
-    // Settings API requires a project name; use the global default or skip gracefully
+    // Settings API requires a project name; use active project or skip gracefully
+    if (!activeProject) { setLoading(false); return }
     api
-      .getSettings('Cables-Company')
+      .getSettings(activeProject)
       .then((data: SettingsResponse) => {
         setSettings({
           litellm_base_url: data.litellm_base_url,
@@ -89,7 +92,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setSaving(true)
     setSaveResult(null)
     try {
-      await api.updateSettings('Cables-Company', settings)
+      if (!activeProject) throw new Error('No active project')
+      await api.updateSettings(activeProject, settings)
       setSaveResult({ success: true, message: 'Settings saved.' })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Save failed.'
@@ -752,8 +756,10 @@ function scoreToPercent(value: number): number {
 export function AgentDetailModal({
   agent,
   onClose,
-  projectName = 'Cables-Company',
+  projectName,
 }: AgentDetailModalProps) {
+  const { activeProject } = useProject()
+  const resolvedProjectName = projectName ?? activeProject ?? ''
   const [detail, setDetail] = useState<AgentDetailResponse | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
 
@@ -765,11 +771,11 @@ export function AgentDetailModal({
     }
     setLoadingDetail(true)
     api
-      .getAgent(projectName, agent.codename)
+      .getAgent(resolvedProjectName, agent.codename)
       .then((d) => setDetail(d))
       .catch(() => setDetail(null))
       .finally(() => setLoadingDetail(false))
-  }, [agent, projectName])
+  }, [agent, resolvedProjectName])
 
   if (!agent) return null
 

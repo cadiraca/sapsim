@@ -14,13 +14,8 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSimulationFeed } from '@/hooks/useSimulationFeed'
+import { useProject } from '@/lib/project-context'
 import type { FeedEvent, FeedEventType } from '@/lib/types'
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const PROJECT_NAME = 'Cables-Company'
 
 // Canonical event types the feed emits
 type EventCategory =
@@ -358,7 +353,8 @@ export function MainFeed() {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
 
-  const { events, connected, error } = useSimulationFeed(PROJECT_NAME)
+  const { activeProject } = useProject()
+  const { events, connected, error } = useSimulationFeed(activeProject ?? '')
 
   // Derive connection state for indicator
   const connectionState: ConnectionState = connected

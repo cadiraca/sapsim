@@ -14,6 +14,7 @@ import {
   InboxIcon,
 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { useProject } from '@/lib/project-context'
 import type {
   Meeting,
   MeetingDetailResponse,
@@ -27,12 +28,6 @@ import type {
   Lesson,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const PROJECT_NAME = 'Cables-Company'
 
 type TabType = 'meetings' | 'decisions' | 'tools' | 'test-strategy' | 'lessons'
 
@@ -110,7 +105,7 @@ const DECISION_IMPACT_COLORS: Record<string, string> = {
 // Meetings tab
 // ---------------------------------------------------------------------------
 
-function MeetingItem({ meeting }: { meeting: Meeting }) {
+function MeetingItem({ meeting, projectName }: { meeting: Meeting; projectName: string }) {
   const [expanded, setExpanded] = useState(false)
   const [detail, setDetail] = useState<MeetingDetailResponse | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
@@ -123,7 +118,7 @@ function MeetingItem({ meeting }: { meeting: Meeting }) {
       setLoadingDetail(true)
       setDetailError(null)
       try {
-        const data = await api.getMeeting(PROJECT_NAME, meeting.id)
+        const data = await api.getMeeting(projectName, meeting.id)
         setDetail(data)
       } catch (err) {
         setDetailError(err instanceof Error ? err.message : 'Failed to load transcript')
@@ -277,7 +272,7 @@ function MeetingItem({ meeting }: { meeting: Meeting }) {
   )
 }
 
-function MeetingsTab() {
+function MeetingsTab({ projectName }: { projectName: string }) {
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -286,14 +281,14 @@ function MeetingsTab() {
     setLoading(true)
     setError(null)
     try {
-      const data = await api.getMeetings(PROJECT_NAME)
+      const data = await api.getMeetings(projectName)
       setMeetings(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load meetings')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [projectName])
 
   useEffect(() => { load() }, [load])
 
@@ -304,7 +299,7 @@ function MeetingsTab() {
   return (
     <div className="space-y-2 h-full overflow-y-auto">
       {meetings.map((meeting) => (
-        <MeetingItem key={meeting.id} meeting={meeting} />
+        <MeetingItem key={meeting.id} meeting={meeting} projectName={projectName} />
       ))}
     </div>
   )
@@ -349,7 +344,7 @@ function DecisionCard({ decision }: { decision: DecisionItem }) {
   )
 }
 
-function DecisionsTab() {
+function DecisionsTab({ projectName }: { projectName: string }) {
   const [data, setData] = useState<DecisionResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -358,14 +353,14 @@ function DecisionsTab() {
     setLoading(true)
     setError(null)
     try {
-      const result = await api.getDecisions(PROJECT_NAME)
+      const result = await api.getDecisions(projectName)
       setData(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load decisions')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [projectName])
 
   useEffect(() => { load() }, [load])
 
@@ -442,7 +437,7 @@ function ToolCard({ tool }: { tool: ToolItem }) {
   )
 }
 
-function ToolsTab() {
+function ToolsTab({ projectName }: { projectName: string }) {
   const [data, setData] = useState<ToolResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -451,14 +446,14 @@ function ToolsTab() {
     setLoading(true)
     setError(null)
     try {
-      const result = await api.getTools(PROJECT_NAME)
+      const result = await api.getTools(projectName)
       setData(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tools')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [projectName])
 
   useEffect(() => { load() }, [load])
 
@@ -506,7 +501,7 @@ function ToolsTab() {
 // Test Strategy tab — live data from /api/projects/:name/test-strategy
 // ---------------------------------------------------------------------------
 
-function TestStrategyTab() {
+function TestStrategyTab({ projectName }: { projectName: string }) {
   const [data, setData] = useState<TestCaseResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -515,14 +510,14 @@ function TestStrategyTab() {
     setLoading(true)
     setError(null)
     try {
-      const result = await api.getTestStrategy(PROJECT_NAME)
+      const result = await api.getTestStrategy(projectName)
       setData(result)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load test strategy')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [projectName])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -606,7 +601,7 @@ function TestStrategyTab() {
 
 type LessonsByPhase = Record<string, Lesson[]>
 
-function LessonsTab() {
+function LessonsTab({ projectName }: { projectName: string }) {
   const [data, setData] = useState<LessonResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -615,14 +610,14 @@ function LessonsTab() {
     setLoading(true)
     setError(null)
     try {
-      const result = await api.getLessons(PROJECT_NAME)
+      const result = await api.getLessons(projectName)
       setData(result)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load lessons')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [projectName])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -689,6 +684,8 @@ function LessonsTab() {
 // ---------------------------------------------------------------------------
 
 export function ContextPanel() {
+  const { activeProject } = useProject()
+  const projectName = activeProject ?? ''
   const [activeTab, setActiveTab] = useState<TabType>('meetings')
 
   const tabs: { id: TabType; label: string; icon: React.ReactNode }[] = [
@@ -722,11 +719,11 @@ export function ContextPanel() {
 
       {/* Content */}
       <div className="flex-1 overflow-hidden p-3">
-        {activeTab === 'meetings' && <MeetingsTab />}
-        {activeTab === 'decisions' && <DecisionsTab />}
-        {activeTab === 'tools' && <ToolsTab />}
-        {activeTab === 'test-strategy' && <TestStrategyTab />}
-        {activeTab === 'lessons' && <LessonsTab />}
+        {activeTab === 'meetings' && <MeetingsTab projectName={projectName} />}
+        {activeTab === 'decisions' && <DecisionsTab projectName={projectName} />}
+        {activeTab === 'tools' && <ToolsTab projectName={projectName} />}
+        {activeTab === 'test-strategy' && <TestStrategyTab projectName={projectName} />}
+        {activeTab === 'lessons' && <LessonsTab projectName={projectName} />}
       </div>
     </section>
   )

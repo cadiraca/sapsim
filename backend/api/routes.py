@@ -67,6 +67,10 @@ from utils.persistence import (
     _ensure_dir,
     _project_dir,
     append_feed_event,
+    count_feed_events,
+    delete_project_state,
+    get_feed_events,
+    list_project_names,
     load_project_state,
     save_project_state,
 )
@@ -81,8 +85,8 @@ router = APIRouter()
 
 def _get_decision_board(project_name: str):
     from artifacts.decision_board import DecisionBoard as ArtifactDecisionBoard
-    from utils.persistence import PROJECTS_BASE
-    return ArtifactDecisionBoard(project_name=project_name, projects_root=str(PROJECTS_BASE))
+    # BUG-001 FIX: DecisionBoard.__init__ does not accept 'projects_root'; removed.
+    return ArtifactDecisionBoard(project_name=project_name)
 
 
 def _get_tool_registry(project_name: str):
@@ -92,25 +96,22 @@ def _get_tool_registry(project_name: str):
 
 def _get_lessons_collector(project_name: str):
     from artifacts.lessons_learned import LessonsCollector
-    try:
-        return LessonsCollector.load(project_name)
-    except FileNotFoundError:
-        return LessonsCollector(project_name)
+    # BUG-008 FIX: LessonsCollector has no .load() classmethod; just instantiate directly.
+    return LessonsCollector(project_name)
 
 
 def _get_test_strategy(project_name: str):
     from artifacts.test_strategy import TestStrategy
-    try:
-        return TestStrategy.load(project_name)
-    except FileNotFoundError:
-        return TestStrategy(project_name)
+    # BUG-009 FIX: TestStrategy has no .load() classmethod; just instantiate directly.
+    return TestStrategy(project_name)
 
 
 def _get_meeting_logger(project_name: str):
     """Build a MeetingLogger hydrated from on-disk meeting JSON files."""
     from artifacts.meeting_logger import MeetingLog, MeetingLogger, TranscriptTurn
 
-    ml = MeetingLogger()
+    # BUG-006 FIX: MeetingLogger.__init__ requires project_name argument.
+    ml = MeetingLogger(project_name)
     meetings_dir = _project_dir(project_name) / "meetings"
     if not meetings_dir.exists():
         return ml
@@ -270,13 +271,10 @@ def _state_to_model(state: dict[str, Any]) -> ProjectResponse:
 
 
 async def _list_project_names() -> list[str]:
-    if not PROJECTS_BASE.exists():
-        return []
-    names = []
-    for entry in PROJECTS_BASE.iterdir():
-        if entry.is_dir() and (entry / "project.json").exists():
-            names.append(entry.name)
-    return sorted(names)
+    # BUG-004 FIX: Use DB-backed list instead of filesystem scan.
+    # The old implementation scanned for 'project.json' files which are never
+    # written (state is stored exclusively in SQLite since Phase 7).
+    return await list_project_names()
 
 
 # ---------------------------------------------------------------------------
@@ -337,23 +335,11 @@ async def create_project(req: CreateProjectRequest) -> ProjectResponse:
     # Default settings
     save_settings(req.name, ProjectSettings())
 
-    # Also register the project with the engine (IDLE state — no loop started yet)
-    engine = get_engine()
-    if not engine.is_registered(req.name):
-        try:
-            await engine.create_project(
-                req.name,
-                config={
-                    "litellm_base_url": ProjectSettings().litellm_base_url,
-                    "litellm_api_key":  ProjectSettings().litellm_api_key,
-                    "litellm_model":    ProjectSettings().litellm_model,
-                },
-            )
-        except Exception as exc:
-            logger.warning(
-                "Engine.create_project failed for '%s' (non-fatal, engine will init on start): %s",
-                req.name, exc
-            )
+    # BUG-011 FIX: Do NOT call engine.create_project() here.
+    # Conductor.initialize_simulation() transitions state IDLE → RUNNING and
+    # overwrites the DB record, so when start_simulation later checks
+    # _require_status(allowed=[IDLE, STOPPED]) it sees RUNNING → 409.
+    # Engine registration is deferred to start_simulation where it belongs.
 
     # Announce creation event to the bus (non-blocking)
     bus = get_bus(req.name)
@@ -418,6 +404,10 @@ async def delete_project(project_name: str) -> None:
         404: Project not found.
     """
     await _require_project(project_name)  # ensures it exists
+    # BUG-002 FIX: Also remove the project record from SQLite DB.
+    # Previously only the filesystem directory was removed, leaving the DB record
+    # intact so subsequent 404-expected calls returned 204 instead.
+    await delete_project_state(project_name)
     project_dir = _project_dir(project_name)
     shutil.rmtree(str(project_dir), ignore_errors=True)
     logger.info("Project '%s' deleted.", project_name)
@@ -870,36 +860,27 @@ async def get_feed(
     limit: int = Query(default=50, ge=1, le=500),
     event_type: Optional[str] = Query(default=None),
 ) -> FeedPageResponse:
-    """Return paginated events from ``feed/events.jsonl``.
+    """Return paginated events from the database.
 
     Filter by ``event_type`` to narrow results (e.g. ``AGENT_MSG``, ``MEETING_STARTED``).
+
+    .. note::
+       BUG-003 FIX: Previously read from a filesystem JSONL file that was never
+       written (events are stored in SQLite via append_feed_event). Now uses the
+       DB-backed get_feed_events / count_feed_events helpers.
     """
     await _require_project(project_name)
-    feed_path = _project_dir(project_name) / "feed" / "events.jsonl"
-    all_events: list[dict] = []
-
-    if feed_path.exists():
-        async with aiofiles.open(str(feed_path), "r") as fh:
-            async for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                    if event_type is None or ev.get("type") == event_type:
-                        all_events.append(ev)
-                except json.JSONDecodeError:
-                    pass
-
-    total = len(all_events)
-    start = (page - 1) * limit
-    end = start + limit
+    offset = (page - 1) * limit
+    events = await get_feed_events(
+        project_name, limit=limit, offset=offset, event_type=event_type
+    )
+    total = await count_feed_events(project_name)
     return FeedPageResponse(
-        events=all_events[start:end],
+        events=events,
         total=total,
         page=page,
         limit=limit,
-        has_more=end < total,
+        has_more=(offset + len(events)) < total,
     )
 
 
@@ -1243,24 +1224,26 @@ async def get_meeting(project_name: str, meeting_id: str) -> MeetingDetailRespon
     summary="Decision board grouped by status",
 )
 async def get_decisions(project_name: str) -> DecisionResponse:
-    """Return all decisions grouped by status (pending/approved/rejected/deferred)."""
+    """Return all decisions grouped by status (pending/approved/rejected/deferred).
+
+    BUG-005 FIX: Previously attempted to call `DecisionBoard.get_board()` (an async
+    method) without awaiting it inside a thread executor — producing a coroutine
+    object instead of results.  Now queries the DB directly via persistence helpers.
+    """
+    from utils.persistence import get_decisions as _get_decisions_from_db
     await _require_project(project_name)
-    artifact_board = await asyncio.get_event_loop().run_in_executor(
-        None, _get_decision_board, project_name
-    )
-    all_decisions = artifact_board.get_board()
+    all_decisions = await _get_decisions_from_db(project_name)
     board = DecisionResponse(total=len(all_decisions))
     for d in all_decisions:
-        d_dict = d.to_dict()
-        s = d.status
+        s = d.get("status", "proposed")
         if s == "approved":
-            board.approved.append(d_dict)
+            board.approved.append(d)
         elif s == "rejected":
-            board.rejected.append(d_dict)
+            board.rejected.append(d)
         elif s == "deferred":
-            board.deferred.append(d_dict)
+            board.deferred.append(d)
         else:
-            board.pending.append(d_dict)
+            board.pending.append(d)
     return board
 
 
@@ -1285,67 +1268,59 @@ async def propose_decision(
         409: A decision with an identical title proposed by the same agent
              on the same day already exists (duplicate guard).
     """
+    # BUG-005 / BUG-010 FIX: Replaced broken thread-executor + unawaited coroutine pattern
+    # with direct async DB access via persistence helpers.
+    from utils.persistence import get_decisions as _get_decisions_from_db
+    from utils.persistence import save_decision as _save_decision
+    import uuid as _uuid
+
     await _require_project(project_name)
 
-    from artifacts.decision_board import Decision
-
-    artifact_board = await asyncio.get_event_loop().run_in_executor(
-        None, _get_decision_board, project_name
-    )
-
     # Duplicate guard: same title + proposer + day
-    existing = artifact_board.get_board()
+    existing = await _get_decisions_from_db(project_name)
     for d in existing:
         if (
-            d.title.strip().lower() == req.title.strip().lower()
-            and d.proposed_by == req.proposed_by
-            and d.proposed_at_day == req.proposed_at_day
+            d.get("title", "").strip().lower() == req.title.strip().lower()
+            and d.get("proposed_by") == req.proposed_by
+            and d.get("proposed_day") == req.proposed_at_day
         ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
                     f"A decision titled '{req.title}' proposed by '{req.proposed_by}' "
-                    f"on day {req.proposed_at_day} already exists "
-                    f"(id={d.id})."
+                    f"on day {req.proposed_at_day} already exists."
                 ),
             )
 
-    new_decision = Decision(
-        title=req.title,
-        description=req.description,
-        category=req.category,  # type: ignore[arg-type]
-        proposed_by=req.proposed_by,
-        proposed_at_day=req.proposed_at_day,
-        rationale=req.rationale or "",
-        impact_assessment=req.impact_assessment or "",
-        related_meeting_id=req.related_meeting_id,
-    )
+    decision_id = str(_uuid.uuid4())
+    decision_dict = {
+        "id":              decision_id,
+        "title":           req.title,
+        "description":     req.description,
+        "category":        req.category or "general",
+        "proposed_by":     req.proposed_by,
+        "proposed_at_day": req.proposed_at_day,
+        "status":          "proposed",
+        "rationale":       req.rationale or "",
+        "impact_assessment": req.impact_assessment or "",
+        "related_meeting_id": req.related_meeting_id,
+        "votes":           {},
+    }
+    await _save_decision(project_name, decision_dict)
 
-    try:
-        artifact_board.propose_decision(new_decision)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(exc),
-        ) from exc
-
-    # Persist synchronously (DecisionBoard.save is sync)
-    await asyncio.get_event_loop().run_in_executor(None, artifact_board.save)
-
-    # Return the full board state so callers can see the new decision in context
-    all_decisions = artifact_board.get_board()
+    # Return the full board state
+    all_decisions = await _get_decisions_from_db(project_name)
     board = DecisionResponse(total=len(all_decisions))
     for d in all_decisions:
-        d_dict = d.to_dict()
-        s = d.status
+        s = d.get("status", "proposed")
         if s == "approved":
-            board.approved.append(d_dict)
+            board.approved.append(d)
         elif s == "rejected":
-            board.rejected.append(d_dict)
+            board.rejected.append(d)
         elif s == "deferred":
-            board.deferred.append(d_dict)
+            board.deferred.append(d)
         else:
-            board.pending.append(d_dict)
+            board.pending.append(d)
     return board
 
 
@@ -1361,7 +1336,8 @@ async def get_tools(project_name: str) -> ToolResponse:
     registry = await asyncio.get_event_loop().run_in_executor(
         None, _get_tool_registry, project_name
     )
-    all_tools = registry.get_all_tools()
+    # BUG-007 FIX: ToolRegistry has no 'get_all_tools' method; renamed to 'get_all_tools_local'.
+    all_tools = registry.get_all_tools_local()
     return ToolResponse(
         tools=[t.to_dict() for t in all_tools],
         total=len(all_tools),
@@ -1377,10 +1353,13 @@ async def get_tools(project_name: str) -> ToolResponse:
 async def get_test_strategy(project_name: str) -> TestCaseResponse:
     """Return the live test strategy document."""
     await _require_project(project_name)
+    # BUG-009 FIX: TestStrategy.get_coverage_report() is async; must be awaited.
+    # Also run instantiation in thread executor then await the async method in the
+    # main event loop.
     ts = await asyncio.get_event_loop().run_in_executor(
         None, _get_test_strategy, project_name
     )
-    coverage = ts.get_coverage_report()
+    coverage = await ts.get_coverage_report()
     return TestCaseResponse(
         tests=[tc.to_dict() for tc in ts.all_tests()],
         overall_progress=float(coverage.get("pass_rate", 0.0)) * 100,

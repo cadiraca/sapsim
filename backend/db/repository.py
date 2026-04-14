@@ -221,6 +221,25 @@ class Database:
             results.append(item)
         return results
 
+    async def delete_project(self, name: str) -> None:
+        """Delete a project and all child rows (cascade via FK) from the DB.
+
+        Parameters
+        ----------
+        name:
+            The ``id`` / ``name`` of the project to remove.
+        """
+        await self._conn.execute("DELETE FROM projects WHERE id = ?", (name,))
+        await self._conn.commit()
+
+    async def count_events(self, project_id: str) -> int:
+        """Return the total number of feed events stored for *project_id*."""
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM feed_events WHERE project_id = ?", (project_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else 0
+
     # ------------------------------------------------------------------
     # Agent CRUD
     # ------------------------------------------------------------------

@@ -1,41 +1,56 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Bell, Plus, Download } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Bell, Plus, Download, ChevronDown, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
+import { useProject } from '@/lib/project-context'
 import type { SimulationStatusResponse } from '@/lib/types'
-
-// Project name — kept in a single place; swap out once we have a project
-// context/store in a later phase.
-const PROJECT_NAME = 'Cables-Company'
 
 interface TopBarProps {
   onNewProject: () => void
 }
 
 export function TopBar({ onNewProject }: TopBarProps) {
+  const { activeProject, projectList, setActiveProject } = useProject()
+
   const [status, setStatus] = useState<SimulationStatusResponse | null>(null)
   const [notificationCount, setNotificationCount] = useState(0)
   const [connected, setConnected] = useState(false)
+  const [selectorOpen, setSelectorOpen] = useState(false)
+  const selectorRef = useRef<HTMLDivElement>(null)
+
+  // Close selector when clicking outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (selectorRef.current && !selectorRef.current.contains(e.target as Node)) {
+        setSelectorOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Fetch simulation status on mount + poll every 5 s
   // ---------------------------------------------------------------------------
   useEffect(() => {
+    if (!activeProject) return
     let cancelled = false
 
     const fetchStatus = async () => {
       try {
-        const data = await api.getStatus(PROJECT_NAME)
+        const data = await api.getStatus(activeProject)
         if (!cancelled) {
           setStatus(data)
           setConnected(true)
-          // Use pending decisions count as a proxy for notifications
           setNotificationCount(data.pending_decisions?.length ?? 0)
         }
       } catch {
-        if (!cancelled) setConnected(false)
+        if (!cancelled) {
+          setConnected(false)
+          setStatus(null)
+        }
       }
     }
 
@@ -45,15 +60,16 @@ export function TopBar({ onNewProject }: TopBarProps) {
       cancelled = true
       clearInterval(interval)
     }
-  }, [])
+  }, [activeProject])
 
   // ---------------------------------------------------------------------------
   // Simulation control helpers
   // ---------------------------------------------------------------------------
   const handleStart = async () => {
+    if (!activeProject) return
     try {
-      await api.startSimulation(PROJECT_NAME)
-      const fresh = await api.getStatus(PROJECT_NAME)
+      await api.startSimulation(activeProject)
+      const fresh = await api.getStatus(activeProject)
       setStatus(fresh)
     } catch (err) {
       console.error('Start failed:', err)
@@ -61,9 +77,10 @@ export function TopBar({ onNewProject }: TopBarProps) {
   }
 
   const handlePause = async () => {
+    if (!activeProject) return
     try {
-      await api.pauseSimulation(PROJECT_NAME)
-      const fresh = await api.getStatus(PROJECT_NAME)
+      await api.pauseSimulation(activeProject)
+      const fresh = await api.getStatus(activeProject)
       setStatus(fresh)
     } catch (err) {
       console.error('Pause failed:', err)
@@ -71,9 +88,10 @@ export function TopBar({ onNewProject }: TopBarProps) {
   }
 
   const handleStop = async () => {
+    if (!activeProject) return
     try {
-      await api.stopSimulation(PROJECT_NAME)
-      const fresh = await api.getStatus(PROJECT_NAME)
+      await api.stopSimulation(activeProject)
+      const fresh = await api.getStatus(activeProject)
       setStatus(fresh)
     } catch (err) {
       console.error('Stop failed:', err)
@@ -81,7 +99,7 @@ export function TopBar({ onNewProject }: TopBarProps) {
   }
 
   // Derived display values (fall back gracefully while loading)
-  const projectName = status?.project_name ?? PROJECT_NAME
+  const projectName = status?.project_name ?? activeProject ?? '—'
   const phase = status?.current_phase ?? '—'
   const day = status?.simulated_day ?? '—'
   const totalDays = status?.total_days ?? '—'
@@ -94,18 +112,80 @@ export function TopBar({ onNewProject }: TopBarProps) {
         <span className="text-sm font-semibold text-white">SAP SIM</span>
       </div>
 
-      {/* Centre: live project info */}
+      {/* Centre: project selector + live project info */}
       <div className="flex items-center gap-1 text-xs text-[#71717a]">
-        <span className="text-white font-medium">PROJECT:</span>
-        <span className="text-[#f59e0b]">{projectName}</span>
-        <span className="mx-2">·</span>
+        {/* Project Selector Dropdown */}
+        <div className="relative" ref={selectorRef}>
+          <button
+            onClick={() => setSelectorOpen((o) => !o)}
+            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-[#27272a] transition-colors"
+            title="Switch project"
+          >
+            <span className="text-white font-medium">PROJECT:</span>
+            <span className="text-[#f59e0b] font-semibold">{projectName}</span>
+            <ChevronDown className="h-3 w-3 text-[#71717a]" />
+          </button>
+
+          {selectorOpen && (
+            <div className="absolute top-full left-0 mt-1 w-56 bg-[#18181b] border border-[#27272a] rounded-lg shadow-xl z-50 overflow-hidden">
+              {/* Project list */}
+              <div className="max-h-48 overflow-y-auto py-1">
+                {projectList.length === 0 ? (
+                  <div className="px-3 py-2 text-[10px] text-[#71717a]">No projects yet</div>
+                ) : (
+                  projectList.map((name) => (
+                    <button
+                      key={name}
+                      onClick={() => {
+                        setActiveProject(name)
+                        setSelectorOpen(false)
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-[#27272a] transition-colors text-left"
+                    >
+                      <Check
+                        className={`h-3 w-3 shrink-0 ${
+                          name === activeProject ? 'text-[#3b82f6]' : 'opacity-0'
+                        }`}
+                      />
+                      <span
+                        className={
+                          name === activeProject
+                            ? 'text-white font-medium'
+                            : 'text-[#a1a1aa]'
+                        }
+                      >
+                        {name}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              {/* New Project button inside dropdown */}
+              <div className="border-t border-[#27272a] p-1">
+                <button
+                  onClick={() => {
+                    setSelectorOpen(false)
+                    onNewProject()
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[#3b82f6] hover:bg-[#27272a] rounded transition-colors"
+                >
+                  <Plus className="h-3 w-3" />
+                  New Project
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <span className="mx-1">·</span>
         <span>Phase:</span>
         <span className="text-[#3b82f6] font-medium capitalize">{phase}</span>
-        <span className="mx-2">·</span>
+        <span className="mx-1">·</span>
         <span>Day {day} of ~{totalDays}</span>
         {status && (
           <>
-            <span className="mx-2">·</span>
+            <span className="mx-1">·</span>
             <span
               className={
                 simStatus === 'RUNNING'
@@ -144,7 +224,7 @@ export function TopBar({ onNewProject }: TopBarProps) {
             size="sm"
             className="h-7 text-xs bg-[#22c55e] hover:bg-[#22c55e]/80 text-white"
             onClick={handleStart}
-            disabled={simStatus === 'RUNNING'}
+            disabled={!activeProject || simStatus === 'RUNNING'}
           >
             ▶ Run
           </Button>
@@ -153,7 +233,7 @@ export function TopBar({ onNewProject }: TopBarProps) {
             variant="outline"
             className="h-7 text-xs bg-transparent border-[#27272a] text-white hover:bg-[#27272a]"
             onClick={handlePause}
-            disabled={simStatus !== 'RUNNING'}
+            disabled={!activeProject || simStatus !== 'RUNNING'}
           >
             ⏸ Pause
           </Button>
@@ -162,7 +242,7 @@ export function TopBar({ onNewProject }: TopBarProps) {
             variant="outline"
             className="h-7 text-xs bg-transparent border-[#27272a] text-white hover:bg-[#27272a]"
             onClick={handleStop}
-            disabled={simStatus === 'STOPPED' || simStatus === 'IDLE'}
+            disabled={!activeProject || simStatus === 'STOPPED' || simStatus === 'IDLE'}
           >
             ■ Stop
           </Button>
@@ -177,17 +257,6 @@ export function TopBar({ onNewProject }: TopBarProps) {
             </span>
           )}
         </button>
-
-        {/* New Project */}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 text-xs bg-transparent border-[#27272a] text-[#71717a] hover:text-white hover:bg-[#27272a]"
-          onClick={onNewProject}
-        >
-          <Plus className="h-3 w-3 mr-1" />
-          New Project
-        </Button>
 
         {/* Export Report */}
         <Button

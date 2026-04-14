@@ -3,14 +3,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Loader2, TrendingUp, UserCircle } from 'lucide-react'
 import { api } from '@/lib/api'
+import { useProject } from '@/lib/project-context'
 import type { StakeholderView as StakeholderViewData, AgentDetailResponse } from '@/lib/types'
 import { cn } from '@/lib/utils'
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const PROJECT_NAME = 'Cables-Company'
 
 // ---------------------------------------------------------------------------
 // Gauge Ring
@@ -146,6 +141,7 @@ function CustomerAgentCard({ codename, projectName }: CustomerAgentCardProps) {
 // ---------------------------------------------------------------------------
 
 export function StakeholderView() {
+  const { activeProject } = useProject()
   const [data, setData] = useState<StakeholderViewData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -154,11 +150,12 @@ export function StakeholderView() {
   const phases = ['Discover', 'Prepare', 'Explore', 'Realize', 'Deploy', 'Run']
 
   const fetchData = useCallback(async () => {
+    if (!activeProject) return
     try {
       setError(null)
       const [stakeholder, agents] = await Promise.all([
-        api.getStakeholderView(PROJECT_NAME),
-        api.getAgents(PROJECT_NAME),
+        api.getStakeholderView(activeProject),
+        api.getAgents(activeProject),
       ])
       setData(stakeholder)
       // Pick top-4 customer agents for the detail cards
@@ -176,7 +173,7 @@ export function StakeholderView() {
 
   useEffect(() => {
     fetchData()
-  }, [fetchData])
+  }, [fetchData, activeProject])
 
   // ── Loading state ───────────────────────────────────────────────────────
   if (loading) {
@@ -366,7 +363,7 @@ export function StakeholderView() {
                 <CustomerAgentCard
                   key={codename}
                   codename={codename}
-                  projectName={PROJECT_NAME}
+                  projectName={activeProject ?? ''}
                 />
               ))}
             </div>
