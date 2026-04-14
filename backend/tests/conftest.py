@@ -48,10 +48,13 @@ def tmp_db_path(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture(autouse=True)
-async def reset_persistence(tmp_db_path: Path):
+async def reset_persistence(tmp_path: Path, tmp_db_path: Path):
     """
     Initialise a clean in-memory-backed persistence layer for every test,
     then close and reset it afterwards.
+
+    Also patches PROJECTS_BASE so filesystem writes go to a temp dir
+    instead of the real ``projects/`` directory.
     """
     from utils import persistence
     import simulation.engine as _eng_module
@@ -65,10 +68,31 @@ async def reset_persistence(tmp_db_path: Path):
     # Without this, projects registered by earlier tests pollute later ones.
     _eng_module._engine_instance = None
 
+    # Redirect PROJECTS_BASE to a temp dir so tests don't pollute the real one
+    original_projects_base = persistence.PROJECTS_BASE
+    test_projects_base = tmp_path / "projects"
+    test_projects_base.mkdir(exist_ok=True)
+    persistence.PROJECTS_BASE = test_projects_base
+
+    # Also patch the module-level reference used by routes.py
+    try:
+        import api.routes as _routes_module
+        _routes_module.PROJECTS_BASE = test_projects_base
+    except Exception:
+        pass
+
     await persistence.init_persistence(tmp_db_path)
     yield
     await persistence.close_persistence()
     persistence._db = None
+
+    # Restore originals
+    persistence.PROJECTS_BASE = original_projects_base
+    try:
+        import api.routes as _routes_module
+        _routes_module.PROJECTS_BASE = original_projects_base
+    except Exception:
+        pass
 
     # Clean up engine after test too
     _eng_module._engine_instance = None

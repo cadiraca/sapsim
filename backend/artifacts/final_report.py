@@ -119,6 +119,54 @@ class FinalReportGenerator:
         self._lessons_collector = lessons_collector
 
     # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sync_coverage(ts: Optional[TestStrategy]) -> dict:
+        """Build a coverage dict from in-memory TestStrategy data (sync).
+
+        ``TestStrategy.get_coverage_report()`` is async (hits the DB).
+        When the report generator runs in a thread executor, we can't await
+        it.  This helper builds an equivalent summary from the in-memory
+        ``_tests`` dict which is always available.
+        """
+        if ts is None:
+            return {}
+        from collections import Counter
+
+        all_tests = list(ts._tests.values())
+        total = len(all_tests)
+        if total == 0:
+            return {"total": 0, "by_status": {}, "by_type": {},
+                    "by_module": {}, "pass_rate": 0.0, "defect_count": 0}
+
+        status_counts = Counter(t.status.value if hasattr(t.status, 'value') else str(t.status) for t in all_tests)
+        type_counts = Counter(t.test_type.value if hasattr(t.test_type, 'value') else str(t.test_type) for t in all_tests)
+        passed = status_counts.get("passed", 0)
+        defects = sum(1 for t in all_tests if t.defect_id)
+
+        by_module: dict = {}
+        for t in all_tests:
+            m = t.module
+            entry = by_module.setdefault(m, {"total": 0, "passed": 0, "failed": 0})
+            entry["total"] += 1
+            s = t.status.value if hasattr(t.status, 'value') else str(t.status)
+            if s == "passed":
+                entry["passed"] += 1
+            elif s == "failed":
+                entry["failed"] += 1
+
+        return {
+            "total": total,
+            "by_status": dict(status_counts),
+            "by_type": dict(type_counts),
+            "by_module": by_module,
+            "pass_rate": passed / total if total else 0.0,
+            "defect_count": defects,
+        }
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -316,9 +364,7 @@ class FinalReportGenerator:
 
         tool_count = len(self._tool_registry) if self._tool_registry else 0
 
-        test_coverage = (
-            self._test_strategy.get_coverage_report() if self._test_strategy else {}
-        )
+        test_coverage = self._sync_coverage(self._test_strategy)
         total_tests = test_coverage.get("total", 0)
         pass_rate = test_coverage.get("pass_rate", 0.0)
 
@@ -466,7 +512,8 @@ class FinalReportGenerator:
             lines.append("_No decision board data available._")
             return "\n".join(lines)
 
-        all_decisions = self._decision_board.get_board()
+        # Use in-memory decisions (sync) instead of get_board() which is async
+        all_decisions = list(self._decision_board._decisions.values())
         if not all_decisions:
             lines.append("_No decisions have been recorded._")
             return "\n".join(lines)
@@ -497,8 +544,9 @@ class FinalReportGenerator:
                 f"| {d.proposed_by} | {d.proposed_at_day} | {d.vote_summary()} |"
             )
 
-        # Decisions still pending
-        pending = self._decision_board.get_pending()
+        # Decisions still pending (sync: use in-memory data instead of async get_pending)
+        pending = [d for d in self._decision_board._decisions.values()
+                   if d.status in ("proposed", "discussed")]
         if pending:
             lines += [
                 "",
@@ -680,8 +728,8 @@ class FinalReportGenerator:
             lines.append("_No test strategy data available._")
             return "\n".join(lines)
 
-        cov = self._test_strategy.get_coverage_report()
-        total = cov["total"]
+        cov = self._sync_coverage(self._test_strategy)
+        total = cov.get("total", 0)
 
         if total == 0:
             lines.append("_No test cases have been recorded._")
@@ -870,9 +918,10 @@ class FinalReportGenerator:
                         f"_(Lesson {ll.id})_"
                     )
 
-        # From open (unresolved) decisions
+        # From open (unresolved) decisions (sync: use in-memory data)
         if self._decision_board:
-            pending = self._decision_board.get_pending()
+            pending = [d for d in self._decision_board._decisions.values()
+                       if d.status in ("proposed", "discussed")]
             for d in pending:
                 recs.append(
                     f"**[Open Decision]** Resolve pending decision: "
@@ -882,9 +931,9 @@ class FinalReportGenerator:
 
         # From failed/blocked tests
         if self._test_strategy:
-            cov = self._test_strategy.get_coverage_report()
-            failed_count = cov["by_status"].get(TestStatus.FAILED.value, 0)
-            blocked_count = cov["by_status"].get(TestStatus.BLOCKED.value, 0)
+            cov = self._sync_coverage(self._test_strategy)
+            failed_count = cov.get("by_status", {}).get(TestStatus.FAILED.value, 0)
+            blocked_count = cov.get("by_status", {}).get(TestStatus.BLOCKED.value, 0)
             if failed_count:
                 recs.append(
                     f"**[Test Quality]** {failed_count} test case(s) have FAILED. "
