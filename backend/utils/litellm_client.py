@@ -257,7 +257,7 @@ class LiteLLMClient:
         instead of hitting the real OpenAI endpoint.
         """
         base = {
-            "model": f"openai/{model}",
+            "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
