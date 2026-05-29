@@ -1039,10 +1039,10 @@ real-world variance in capability, experience, and engagement level.
 
 | Tier | Model | Agents | Rationale |
 |------|-------|--------|-----------|
-| **Tier 1 — Strategic** | claude-4-6-opus | PM_ALEX, ARCH_SARA, EXEC_VICTOR, PMO_NIKO | Big picture thinkers, complex trade-offs |
-| **Tier 2 — Senior** | claude-4-6-sonnet | FI_CHEN, CO_MARTA, MM_RAVI, SD_ISLA, PP_JONAS, WM_FATIMA, INT_MARCO, SEC_DIANA, BI_SAM, CHG_NADIA, DM_FELIX, QA_CLAIRE, IT_MGR_HELEN, CUST_PM_OMAR | Domain experts, solid decision-makers |
-| **Tier 3 — Operational** | gemini-2.5-pro / gpt-5.2 | DEV_PRIYA, DEV_LEON, BA_CUST_JAMES, FI_KU_ROSE, CO_KU_BJORN, MM_KU_GRACE, SD_KU_TONY | Capable but narrower scope, occasionally miss context |
-| **Tier 4 — Basic** | qwen3.6-plus (free) | WM_KU_ELENA, PP_KU_IBRAHIM, HR_KU_SOPHIE, CHAMP_LEILA | Low engagement archetypes, terse responses, may miss things |
+| **Tier 1 — Strategic** | MiniMax-M2.7 | PM_ALEX, ARCH_SARA, EXEC_VICTOR, PMO_NIKO | Big picture thinkers, complex trade-offs |
+| **Tier 2 — Senior** | MiniMax-M2.7 | FI_CHEN, CO_MARTA, MM_RAVI, SD_ISLA, PP_JONAS, WM_FATIMA, INT_MARCO, SEC_DIANA, BI_SAM, CHG_NADIA, DM_FELIX, QA_CLAIRE, IT_MGR_HELEN, CUST_PM_OMAR | Domain experts, solid decision-makers |
+| **Tier 3 — Operational** | MiniMax-M2.7 | DEV_PRIYA, DEV_LEON, BA_CUST_JAMES, FI_KU_ROSE, CO_KU_BJORN, MM_KU_GRACE, SD_KU_TONY | Capable but narrower scope, occasionally miss context |
+| **Tier 4 — Basic** | MiniMax-M2.7 | WM_KU_ELENA, PP_KU_IBRAHIM, HR_KU_SOPHIE, CHAMP_LEILA | Low engagement archetypes, terse responses, may miss things |
 
 **Tier Drift:** Customer agents can upgrade/downgrade tiers based on personality evolution.
 A Ghost who re-engages after missing a deadline might move from Tier 4 → Tier 3.

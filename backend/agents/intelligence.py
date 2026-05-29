@@ -7,10 +7,7 @@ Purpose: Maps agent codenames to LLM intelligence tiers. Tiers define which mode
 Dependencies: None (pure configuration)
 
 Tier summary:
-  strategic   → claude-4-6-opus    (PM, architect, exec, PMO)
-  senior      → claude-4-6-sonnet  (domain leads, QA, IT mgr, cust PM)
-  operational → gemini-2.5-pro     (developers, business analysts, functional key users)
-  basic       → qwen3.6-plus       (low-engagement archetypes: ghost, reluctant champion)
+  All tiers → MiniMax-M2.7  (unified model for all agents)
 
 Tier drift for customer agents is handled in backend/agents/personality.py.
 """
@@ -26,7 +23,7 @@ from typing import Optional
 INTELLIGENCE_TIERS: dict[str, dict] = {
     "strategic": {
         "tier_name": "strategic",
-        "model": "claude-4-6-opus",
+        "model": "MiniMax-M2.7",
         "label": "Tier 1 — Strategic",
         "description": (
             "Big-picture thinkers with complex trade-off reasoning. "
@@ -36,7 +33,7 @@ INTELLIGENCE_TIERS: dict[str, dict] = {
     },
     "senior": {
         "tier_name": "senior",
-        "model": "claude-4-6-sonnet",
+        "model": "MiniMax-M2.7",
         "label": "Tier 2 — Senior",
         "description": (
             "Domain experts and solid decision-makers. "
@@ -46,7 +43,7 @@ INTELLIGENCE_TIERS: dict[str, dict] = {
     },
     "operational": {
         "tier_name": "operational",
-        "model": "gemini-2.5-pro",
+        "model": "MiniMax-M2.7",
         "label": "Tier 3 — Operational",
         "description": (
             "Capable but with narrower scope. "
@@ -56,7 +53,7 @@ INTELLIGENCE_TIERS: dict[str, dict] = {
     },
     "basic": {
         "tier_name": "basic",
-        "model": "qwen3.6-plus",
+        "model": "MiniMax-M2.7",
         "label": "Tier 4 — Basic",
         "description": (
             "Low-engagement archetypes. Terse responses, may miss things. "

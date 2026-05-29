@@ -16,7 +16,7 @@ class DmFelix(BaseAgent):
     """
     DM_FELIX — Data Migration Consultant (Consultant Side)
 
-    Intelligence tier: Tier 2 — Senior (claude-4-6-sonnet)
+    Intelligence tier: Tier 2 — Senior (MiniMax-M2.7)
     """
 
     role: str = "Data Migration Consultant"

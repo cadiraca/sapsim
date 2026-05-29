@@ -18,7 +18,7 @@ class HrKuSophie(BaseAgent):
     """
     HR_KU_SOPHIE — HR Key User (Customer Side)
 
-    Intelligence tier: Tier 4 — Basic (gpt-5.2)
+    Intelligence tier: Tier 4 — Basic (MiniMax-M2.7)
     """
 
     role: str = "HR Key User"

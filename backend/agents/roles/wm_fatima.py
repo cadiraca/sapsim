@@ -16,7 +16,7 @@ class WmFatima(BaseAgent):
     """
     WM_FATIMA — Warehouse Management Consultant (Consultant Side)
 
-    Intelligence tier: Tier 2 — Senior (claude-4-6-sonnet)
+    Intelligence tier: Tier 2 — Senior (MiniMax-M2.7)
     """
 
     role: str = "WM/EWM Functional Consultant"

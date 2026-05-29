@@ -69,10 +69,10 @@ Agents are assigned LLM models that match their seniority and complexity of reas
 
 | Tier | Label | Model | Agents |
 |------|-------|-------|--------|
-| 1 | Strategic | `claude-4-6-opus` | PM_ALEX, ARCH_SARA, EXEC_VICTOR, PMO_NIKO |
-| 2 | Senior | `claude-4-6-sonnet` | Module leads, Basis, QA, IT Mgr, Cust PM |
-| 3 | Operational | `gemini-2.5-pro` | Developers, key users, business analysts |
-| 4 | Basic | `qwen3.6-plus` | Low-engagement archetypes (ghost, reluctant) |
+| 1 | Strategic | `MiniMax-M2.7` | PM_ALEX, ARCH_SARA, EXEC_VICTOR, PMO_NIKO |
+| 2 | Senior | `MiniMax-M2.7` | Module leads, Basis, QA, IT Mgr, Cust PM |
+| 3 | Operational | `MiniMax-M2.7` | Developers, key users, business analysts |
+| 4 | Basic | `MiniMax-M2.7` | Low-engagement archetypes (ghost, reluctant) |
 
 This creates realistic variance: strategic agents handle ambiguity and trade-offs, operational agents execute but miss context, and basic agents behave as difficult stakeholders do in real projects.
 

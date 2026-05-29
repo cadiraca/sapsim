@@ -18,7 +18,7 @@ class PpKuIbrahim(BaseAgent):
     """
     PP_KU_IBRAHIM — Production Planning Key User (Customer Side)
 
-    Intelligence tier: Tier 4 — Basic (gpt-5.2)
+    Intelligence tier: Tier 4 — Basic (MiniMax-M2.7)
     """
 
     role: str = "Production Planning Key User"

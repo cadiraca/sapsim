@@ -17,7 +17,7 @@ class CustPmOmar(BaseAgent):
     """
     CUST_PM_OMAR — Customer Project Manager (Customer Side)
 
-    Intelligence tier: Tier 2 — Senior (claude-4-6-sonnet)
+    Intelligence tier: Tier 2 — Senior (MiniMax-M2.7)
     """
 
     role: str = "Customer Project Manager"

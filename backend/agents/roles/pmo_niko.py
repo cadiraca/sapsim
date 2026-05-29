@@ -18,7 +18,7 @@ class PmoNiko(BaseAgent):
     """
     PMO_NIKO — PMO Lead (Cross-Functional)
 
-    Intelligence tier: Tier 1 — Strategic (claude-4-6-opus)
+    Intelligence tier: Tier 1 — Strategic (MiniMax-M2.7)
     """
 
     role: str = "PMO Lead"

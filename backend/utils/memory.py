@@ -29,9 +29,8 @@ logger = logging.getLogger(__name__)
 # compression calls lean while still giving the LLM enough signal.
 COMPRESSION_MAX_TURNS = 30
 
-# Compression uses the fastest/cheapest available model — summaries don't need
-# the agent's assigned tier model; clarity and speed matter more.
-COMPRESSION_MODEL = "claude-4-6-sonnet"
+# Compression uses MiniMax-M2.7 — same model as agents for consistency.
+COMPRESSION_MODEL = "MiniMax-M2.7"
 
 # Target word budget for the generated summary (instructed to the LLM).
 SUMMARY_MAX_WORDS = 300
@@ -51,7 +50,7 @@ async def compress_memory(
 
     Steps:
     1. Build the compression prompt from the agent's buffered turns.
-    2. Call LiteLLM with a fixed summary instruction (always claude-4-6-sonnet).
+    2. Call LiteLLM with COMPRESSION_MODEL (always MiniMax-M2.7).
     3. Persist the summary to ``memory/{codename}_summary.md``.
     4. Return the summary string so the caller can store it on the agent.
 

@@ -18,7 +18,7 @@ class ChampLeila(BaseAgent):
     """
     CHAMP_LEILA — Change Champion (Customer Side, Cross-Functional)
 
-    Intelligence tier: Tier 4 — Basic (gpt-5.2)
+    Intelligence tier: Tier 4 — Basic (MiniMax-M2.7)
     """
 
     role: str = "Change Champion"

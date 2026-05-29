@@ -15,7 +15,7 @@ class FiChen(BaseAgent):
     """
     FI_CHEN — Financial Accounting Consultant (Consultant Side)
 
-    Intelligence tier: Tier 2 — Senior (claude-4-6-sonnet)
+    Intelligence tier: Tier 2 — Senior (MiniMax-M2.7)
     """
 
     role: str = "FI Functional Consultant"

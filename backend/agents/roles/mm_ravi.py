@@ -15,7 +15,7 @@ class MmRavi(BaseAgent):
     """
     MM_RAVI — Materials Management Consultant (Consultant Side)
 
-    Intelligence tier: Tier 2 — Senior (claude-4-6-sonnet)
+    Intelligence tier: Tier 2 — Senior (MiniMax-M2.7)
     """
 
     role: str = "MM Functional Consultant"

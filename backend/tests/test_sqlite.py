@@ -119,7 +119,7 @@ async def test_database_save_and_load_project() -> None:
             "id":            "proj-001",
             "name":          "TestSAPProject",
             "status":        "active",
-            "config":        {"litellm_base_url": "http://localhost:4000", "tier": 1},
+            "config":        {"litellm_base_url": "https://api.minimax.io/v1", "tier": 1},
             "current_phase": "Explore",
             "current_day":   7,
         }
@@ -462,7 +462,7 @@ async def test_persistence_full_lifecycle() -> None:
             "status":        "active",
             "current_phase": "Explore",
             "simulated_day": 5,
-            "litellm_base_url": "http://localhost:4000",
+            "litellm_base_url": "https://api.minimax.io/v1",
             "agents_initialised": True,
         }
         await persistence.save_project_state("p7-smoke-test", project_state)

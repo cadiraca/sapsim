@@ -17,7 +17,7 @@ class SdKuTony(BaseAgent):
     """
     SD_KU_TONY — Sales & Distribution Key User (Customer Side)
 
-    Intelligence tier: Tier 3 — Operational (gemini-2.5-pro)
+    Intelligence tier: Tier 3 — Operational (MiniMax-M2.7)
     """
 
     role: str = "Sales & Distribution Key User"

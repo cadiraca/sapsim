@@ -18,7 +18,7 @@ class BaCustJames(BaseAgent):
     """
     BA_CUST_JAMES — Customer Business Analyst (Customer Side, Cross-Functional)
 
-    Intelligence tier: Tier 3 — Operational (gemini-2.5-pro)
+    Intelligence tier: Tier 3 — Operational (MiniMax-M2.7)
     """
 
     role: str = "Customer Business Analyst"

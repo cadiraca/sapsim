@@ -25,15 +25,17 @@ class ProjectSettings(BaseModel):
 
     # LiteLLM gateway
     litellm_base_url: str = Field(
-        default_factory=lambda: os.environ.get("LLM_BASE_URL", "http://localhost:4000"),
+        default_factory=lambda: os.environ.get(
+            "LLM_BASE_URL", "https://api.minimax.io/v1"
+        ),
         description="Base URL for the LiteLLM-compatible gateway (no trailing slash)",
     )
     litellm_api_key: str = Field(
         default_factory=lambda: os.environ.get("LLM_API_KEY", ""),
-        description="API key for the LiteLLM gateway",
+        description="API key for the LiteLLM gateway — set via LLM_API_KEY env var",
     )
     litellm_model: str = Field(
-        default_factory=lambda: os.environ.get("LLM_MODEL", "claude-4-6-sonnet"),
+        default_factory=lambda: os.environ.get("LLM_MODEL", "MiniMax-M2.7"),
         description="Default model for agents that don't have a tier override",
     )
 

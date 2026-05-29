@@ -15,7 +15,7 @@ class ArchSara(BaseAgent):
     """
     ARCH_SARA — Solution Architect (Consultant Side)
 
-    Intelligence tier: Tier 1 — Strategic (claude-4-6-opus)
+    Intelligence tier: Tier 1 — Strategic (MiniMax-M2.7)
     """
 
     role: str = "Solution Architect"

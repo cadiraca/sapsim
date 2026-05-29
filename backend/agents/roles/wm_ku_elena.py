@@ -18,7 +18,7 @@ class WmKuElena(BaseAgent):
     """
     WM_KU_ELENA — Warehouse Management Key User (Customer Side)
 
-    Intelligence tier: Tier 4 — Basic (gpt-5.2)
+    Intelligence tier: Tier 4 — Basic (MiniMax-M2.7)
     """
 
     role: str = "Warehouse Management Key User"

@@ -15,7 +15,7 @@ class PmAlex(BaseAgent):
     """
     PM_ALEX — Project Manager (Consultant Side)
 
-    Intelligence tier: Tier 1 — Strategic (claude-4-6-opus)
+    Intelligence tier: Tier 1 — Strategic (MiniMax-M2.7)
     """
 
     role: str = "Project Manager"
