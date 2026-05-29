@@ -5,6 +5,8 @@ Purpose: Async LiteLLM completion wrapper with streaming, retries (max 3, expone
          backoff), structured logging (agent codename, tokens, latency), and per-call
          model override support.
 Dependencies: litellm, config, logging, asyncio
+
+NOTE: LiteLLM client is kept for future use. For MiniMax, use MiniMaxClient instead.
 """
 
 import asyncio
@@ -12,7 +14,262 @@ import logging
 import time
 from typing import AsyncGenerator, Optional
 
+# ---------------------------------------------------------------------------
+# MiniMax Direct Client — bypasses LiteLLM for OpenAI-compatible MiniMax endpoints
+# ---------------------------------------------------------------------------
+
+import asyncio
+import json
+import logging
+import time
+from typing import AsyncGenerator, Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+class MiniMaxError(Exception):
+    """Raised when all retry attempts are exhausted or a non-retryable error occurs."""
+
+
+class MiniMaxClient:
+    """
+    Async httpx-based client for MiniMax OpenAI-compatible endpoints.
+    Does NOT go through LiteLLM — calls directly to the gateway.
+
+    Supports:
+    - Streaming via async generator
+    - Automatic retries (max 3, exponential backoff: 1s, 2s, 4s)
+    - Structured logging per call (agent codename, tokens, latency, model)
+    - Per-call model override
+    """
+
+    MAX_RETRIES = 3
+    RETRY_BASE_DELAY = 1.0
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        default_model: str,
+        max_parallel_agents: int = 10,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.default_model = default_model
+        self.max_parallel_agents = max_parallel_agents
+
+    async def complete(
+        self,
+        messages: list[dict],
+        *,
+        agent_codename: str = "UNKNOWN",
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        extra_kwargs: Optional[dict] = None,
+    ) -> str:
+        resolved_model = self._resolve_model(model)
+        kwargs = self._build_kwargs(
+            messages=messages,
+            model=resolved_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=False,
+            extra=extra_kwargs or {},
+        )
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            start = time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=kwargs,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+
+                latency = time.monotonic() - start
+                usage = data.get("usage", {})
+                self._log_call(
+                    agent_codename=agent_codename,
+                    model=resolved_model,
+                    latency=latency,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    attempt=attempt,
+                    streaming=False,
+                )
+                return data["choices"][0]["message"].get("content") or ""
+
+            except Exception as exc:
+                latency = time.monotonic() - start
+                logger.warning(
+                    "[%s] attempt %d/%d failed after %.2fs — %s: %s",
+                    agent_codename,
+                    attempt,
+                    self.MAX_RETRIES,
+                    latency,
+                    type(exc).__name__,
+                    exc,
+                )
+                if attempt == self.MAX_RETRIES:
+                    raise MiniMaxError(
+                        f"[{agent_codename}] All {self.MAX_RETRIES} attempts failed. "
+                        f"Last error: {exc}"
+                    ) from exc
+                delay = self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.info("[%s] Retrying in %.1fs…", agent_codename, delay)
+                await asyncio.sleep(delay)
+
+        raise MiniMaxError(f"[{agent_codename}] Unexpected exit from retry loop.")
+
+    async def stream(
+        self,
+        messages: list[dict],
+        *,
+        agent_codename: str = "UNKNOWN",
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        extra_kwargs: Optional[dict] = None,
+    ) -> AsyncGenerator[str, None]:
+        resolved_model = self._resolve_model(model)
+        kwargs = self._build_kwargs(
+            messages=messages,
+            model=resolved_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            extra=extra_kwargs or {},
+        )
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            start = time.monotonic()
+            total_tokens_estimate = 0
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=kwargs,
+                    ) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            if line.strip() == "data: [DONE]":
+                                break
+                            chunk = json.loads(line[6:])
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            text = delta.get("content") or ""
+                            if text:
+                                total_tokens_estimate += len(text.split())
+                                yield text
+
+                latency = time.monotonic() - start
+                self._log_call(
+                    agent_codename=agent_codename,
+                    model=resolved_model,
+                    latency=latency,
+                    prompt_tokens=0,
+                    completion_tokens=total_tokens_estimate,
+                    attempt=attempt,
+                    streaming=True,
+                )
+                return
+
+            except GeneratorExit:
+                return
+
+            except Exception as exc:
+                latency = time.monotonic() - start
+                logger.warning(
+                    "[%s] stream attempt %d/%d failed after %.2fs — %s: %s",
+                    agent_codename,
+                    attempt,
+                    self.MAX_RETRIES,
+                    latency,
+                    type(exc).__name__,
+                    exc,
+                )
+                if attempt == self.MAX_RETRIES:
+                    raise MiniMaxError(
+                        f"[{agent_codename}] All {self.MAX_RETRIES} stream attempts failed. "
+                        f"Last error: {exc}"
+                    ) from exc
+                delay = self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.info("[%s] Retrying stream in %.1fs…", agent_codename, delay)
+                await asyncio.sleep(delay)
+
+    def _resolve_model(self, override: Optional[str]) -> str:
+        return override if override else self.default_model
+
+    def _build_kwargs(
+        self,
+        messages: list[dict],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        stream: bool,
+        extra: dict,
+    ) -> dict:
+        base = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+        base.update(extra)
+        return base
+
+    def _log_call(
+        self,
+        agent_codename: str,
+        model: str,
+        latency: float,
+        prompt_tokens: int,
+        completion_tokens: int,
+        attempt: int,
+        streaming: bool,
+    ) -> None:
+        logger.info(
+            "[MiniMax] agent=%s model=%s latency=%.3fs "
+            "prompt_tokens=%d completion_tokens=%d total_tokens=%d "
+            "attempt=%d streaming=%s",
+            agent_codename,
+            model,
+            latency,
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+            attempt,
+            streaming,
+        )
+
+
+def build_minimax_client_from_settings(settings: dict) -> "MiniMaxClient":
+    return MiniMaxClient(
+        base_url=settings["litellm_base_url"],
+        api_key=settings["litellm_api_key"],
+        default_model=settings.get("litellm_model", "MiniMax-M2.7"),
+        max_parallel_agents=settings.get("max_parallel_agents", 10),
+    )
+
+
+# ---------------------------------------------------------------------------
+# LiteLLM Client — kept for future use when a LiteLLM gateway is available
+# ---------------------------------------------------------------------------
+
 import litellm
+from litellm import acompletion
+
+logger = logging.getLogger(__name__)
 from litellm import acompletion
 
 logger = logging.getLogger(__name__)

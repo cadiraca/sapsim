@@ -30,7 +30,7 @@ from simulation.state_machine import (
     ProjectState,
     save_state,
 )
-from utils.litellm_client import LiteLLMClient
+from utils.litellm_client import MiniMaxClient
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +145,8 @@ class SimulationEngine:
         # project_name → list of injected failure records
         self._injected_failures: dict[str, list[dict[str, Any]]] = {}
 
-        # project_name → LiteLLMClient (kept alive for the project lifetime)
-        self._litellm_clients: dict[str, LiteLLMClient] = {}
+        # project_name → MiniMaxClient (kept alive for the project lifetime)
+        self._clients: dict[str, MiniMaxClient] = {}
 
         logger.info(
             "[SimulationEngine] Initialised (default tick=%.1fs).",
@@ -166,7 +166,7 @@ class SimulationEngine:
 
         This method:
         1. Loads project settings (or uses defaults).
-        2. Creates a :class:`~utils.litellm_client.LiteLLMClient`.
+        2. Creates a :class:`~utils.litellm_client.MiniMaxClient`.
         3. Instantiates all 30 agents via the factory.
         4. Creates a :class:`~agents.orchestrator.Conductor` and calls
            :meth:`Conductor.initialize_simulation`.
@@ -207,14 +207,14 @@ class SimulationEngine:
         tick_iv   = float(cfg.get("tick_interval_seconds", self.tick_interval_seconds))
 
         # ----------------------------------------------------------------
-        # 2. Create LiteLLMClient
+        # 2. Create MiniMaxClient
         # ----------------------------------------------------------------
-        litellm_client = LiteLLMClient(
+        litellm_client = MiniMaxClient(
             base_url=base_url,
             api_key=api_key,
             default_model=model,
         )
-        self._litellm_clients[name] = litellm_client
+        self._clients[name] = litellm_client
 
         # ----------------------------------------------------------------
         # 3. Instantiate all 30 agents
